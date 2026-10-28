@@ -1,0 +1,116 @@
+Guía de Especificación Técnica y Algoritmos para Replicar River Raid
+Este documento contiene las especificaciones técnicas, mecánicas de juego, estructuras de datos y algoritmos desensamblados del clásico River Raid (Activision, 1982 / Carol Shaw). Está diseñado como una referencia completa para desarrolladores que busquen replicar el juego en plataformas modernas (Godot, Unity, Pygame, C++, HTML5/JS, etc.).
+1. Mecánicas de Juego y Parámetros
+1.1. Controles y Física del Avión (B-1 StratoWing)
+Movimiento Horizontal: Desplazamiento continuo en el eje X.
+Modo Novato (Dificultad B): Permite modificar la trayectoria del misil en vuelo al mover el joystick.
+Modo Experto (Dificultad A): Los misiles viajan estrictamente en línea recta.
+Movimiento Vertical y Velocidad: El mapa avanza hacia abajo continuamente (sensación de vuelo hacia adelante).
+Empujar arriba: Aumenta la velocidad del mapa (Acelerar).
+Tirar abajo: Reduce la velocidad del mapa (Frenar).
+Disparo: Proyectil vertical. Mover el disparador en ráfaga permite mantener 1 misil en pantalla a la vez (en la arquitectura Atari 2600 original, solo un proyectil de jugador coexiste de forma nativa por sprite).
+1.2. Sistema de Combustible
+Consumo: Depleción constante por segundo, independientemente de la velocidad de vuelo.
+Siren / Alarma: Se activa al bajar del 25% del tanque.
+Recarga (FUEL Depot): Al volar sobre los depósitos "FUEL", la barra de combustible se incrementa. Cuanto menor sea la velocidad del avión sobre el depósito, mayor es la cantidad de combustible recuperada antes de salir de su área de colisión.
+Destrucción del Depósito: El depósito de combustible puede ser destruido por un disparo del jugador para obtener puntos adicionales. Es posible recargar parcialmente y destruirlo antes de salir de la zona.
+1.3. Puntuación y Vidas
+Entidad / Elemento
+ | Puntos Otorgados
+ | Notas / Comportamiento
+ |
+Barco / Tanker
+ | 30 pts
+ | Se mueve horizontalmente en canales anchos.
+ |
+Helicóptero
+ | 60 pts
+ | Movimiento transversal a velocidad moderada.
+ |
+Depósito de Fuel
+ | 80 pts
+ | Estático en el centro o bordes del río.
+ |
+Avión de Caza (Jet)
+ | 100 pts
+ | Movimiento rápido cruzando el río de lado a lado.
+ |
+Puente (Checkpoint)
+ | 500 pts
+ | Destrucción obligatoria para continuar sin chocar. Marca checkpoint.
+ |
+Vidas iniciales: 3 aviones de reserva.
+Vida extra: 1 vida por cada 10.000 puntos (máximo 9 en reserva).
+Puntuación Máxima (Kill Screen): Al alcanzar 1.000.000 de puntos, el marcador se llena de signos de exclamación (!!!!!!!) y el juego finaliza o deshabilita la subida de marcador.
+2. Algoritmo Generador de Terreno (LFSR)
+Para crear un mapa de longitud prácticamente infinita con solo 128 bytes de RAM y 4KB de ROM, Carol Shaw utilizó un Linear Feedback Shift Register (LFSR) de 16 bits con una máscara polinomial en modo Galois/Fibonacci.
+2.1. Código Ensamblador MOS 6502 (Original)
+; -------------------------------------------------------------------; Rutina del Generador Pseudoaleatorio de River Raid (Atari 2600); -------------------------------------------------------------------SEED_LO = 14;ValorinicialByteBajo(14 = 20)SEED_HI = A8;ValorinicialByteAlto(A8 = 168)NextRandomBlock:    LDA SEED_HI    LSR              ; Desplazamiento a la derecha (Bit 0 pasa al Carry)    BCC NoXor        ; Si el bit desplazado es 0, omitir XOR    EOR #$B4         ; Máscara polinomial B4 (10110100 en binario)NoXor:    STA SEED_HI    ROR SEED_LO      ; Rotación sobre el byte bajo    RTS
+2.2. Implementación del Algoritmo en Python
+class RiverRaidGenerator:    def __init__(self):        # Semillas originales del juego        self.seed_hi = 0xA8        self.seed_lo = 0x14    def step(self):        """Avanza el LFSR un paso y retorna la semilla completa de 16 bits."""        lsb_hi = self.seed_hi & 1        self.seed_hi >>= 1        if lsb_hi:            self.seed_hi ^= 0xB4                # Rotación del byte bajo incorporando el bit saliente previo        carry = 1 if lsb_hi else 0        new_lsb_lo = self.seed_lo & 1        self.seed_lo = (self.seed_lo >> 1) | (carry << 7)                return (self.seed_hi << 8) | self.seed_lo    def get_river_slice(self):        """Calcula el ancho del río, presencia de isla y objeto para el bloque."""        val = self.step()                # Extracción de características mediante slicing de bits:        width = (val & 0x0F) + 4          # Ancho del río (bits 0-3)        has_island = ((val >> 4) & 0x03) == 0  # Isla si los bits 4-5 son 00        entity_type = (val >> 6) & 0x07    # Tipo de enemigo/objeto (bits 6-8)                return {            "width": width,            "has_island": has_island,            "entity": entity_type        }
+2.3. Implementación del Algoritmo en C# (Unity / Godot Native)
+public class RiverRaidMapGen{    private byte seedHi = 0xA8;    private byte seedLo = 0x14;    public void ResetToStart()    {        seedHi = 0xA8;        seedLo = 0x14;    }    public ushort Step()    {        int lsbHi = seedHi & 1;        seedHi >>= 1;        if (lsbHi == 1)        {            seedHi ^= 0xB4;        }        int carry = (lsbHi == 1) ? 0x80 : 0x00;        seedLo = (byte)((seedLo >> 1) | carry);        return (ushort)((seedHi << 8) | seedLo);    }    public (int width, bool hasIsland, int entityType) GetNextSection()    {        ushort state = Step();        int width = (state & 0x0F) + 4;        bool hasIsland = ((state >> 4) & 0x03) == 0;        int entityType = (state >> 6) & 0x07;        return (width, hasIsland, entityType);    }}
+3. Decodificación de Bits y Generación de Elementos
+Cada vez que el algoritmo ejecuta un paso, se genera un bloque de terreno equivalente a 32 líneas de escaneo vertical. Los bits del valor de 16 bits resultante se interpretan de la siguiente manera:
+Bits 0–3 (Ancho del Cauce): Determinan el margen de las paredes verdes (orillas). A menor valor numérico, más estrecho es el río.
+Bits 4–5 (Generación de Islas): Si el valor binario de estos dos bits es 00, se dibuja una isla de tierra en el centro de la pantalla, dividiendo el río en dos canales estrechos e independientes.
+Bits 6–8 (Identificador de Entidad): Determinan la entidad cargada en la sección según la siguiente tabla de mapeo:
+Valor Binario / Decimal
+ | Tipo de Entidad
+ | Comportamiento de Spawn
+ |
+000 (0)
+ | Tanque de Fuel
+ | Estático en el canal central o secundario.
+ |
+001 (1)
+ | Barco / Tanker
+ | Patrulla horizontal entre orillas.
+ |
+010 (2)
+ | Helicóptero
+ | Desplazamiento lateral rápido.
+ |
+011 (3)
+ | Avión de Caza (Jet)
+ | Velocidad lateral alta cruzando el río.
+ |
+100 (4)
+ | Edificio / Casa
+ | Decorativo en la orilla (impenetrable/obstáculo).
+ |
+>100 (5-7)
+ | Sin Enemigo / Espacio libre
+ | Sección despejada para maniobra.
+ |
+4. Sistema de Checkpoints y Modulo de 128 Secciones
+4.1. Bucle de 128 Secciones
+El registrador LFSR genera exactamente 128 combinaciones de puentes/secciones únicas antes de completar su período matemático. Al cruzar el Puente 128:
+El algoritmo de terreno vuelve a los valores iniciales (repetirá exactamente las mismas formas de río, islas y curvas).
+Los modificadores globales de juego incrementan: la velocidad de los jets/helicópteros aumenta y la tasa de consumo de combustible se vuelve más exigente.
+4.2. Vectores de Checkpoint (ROM Lookup)
+Para evitar tener que simular miles de ciclos desde el inicio cada vez que el jugador pierde una vida en un puente avanzado, la ROM incluye vectores estáticos que cargan el estado exacto del LFSR al reaparecer:
+Checkpoint (Puente)
+ | SEED_HI (Hex)
+ | SEED_LO (Hex)
+ |
+Inicio (Puente 1)
+ | $A8
+ | $14
+ |
+Puente 5
+ | $3C
+ | $8B
+ |
+Puente 20
+ | $72
+ | $4F
+ |
+Puente 50
+ | $B4
+ | $6D
+ |
+5. Consideraciones de Arquitectura para Motores Modernos
+Tilemaps Dinámicos / Procedurales: En lugar de cargar escenas preconstruidas, utiliza un script generador que instancie o dibuje en un Tilemap 2D las secciones de pared izquierda, agua/isla y pared derecha a medida que la cámara avanza en el eje Y.
+Despawn y Desempeño: Elimina las secciones y enemigos que queden por debajo del margen inferior de la pantalla para mantener constante el uso de memoria.
+Interpolación de Movimiento: Asegúrate de que el movimiento lateral de los enemigos se calcule según delta time para mantener la fidelidad de la velocidad del juego original de 60 FPS / NTSC.

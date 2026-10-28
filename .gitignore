@@ -1,0 +1,7 @@
+build/
+output/*.bin
+output/*.map
+frames/
+*.png
+!docs/img/*.png
+symbols.txt

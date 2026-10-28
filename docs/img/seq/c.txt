@@ -1,0 +1,12 @@
+docs/img/seq/c00.png   sprites activos: 13 de 32
+docs/img/seq/c01.png   sprites activos: 14 de 32
+docs/img/seq/c02.png   sprites activos: 13 de 32
+docs/img/seq/c03.png   sprites activos: 14 de 32
+docs/img/seq/c04.png   sprites activos: 15 de 32
+docs/img/seq/c05.png   sprites activos: 15 de 32
+docs/img/seq/c06.png   sprites activos: 15 de 32
+docs/img/seq/c07.png   sprites activos: 14 de 32
+docs/img/seq/c08.png   sprites activos: 15 de 32
+docs/img/seq/c09.png   sprites activos: 13 de 32
+docs/img/seq/c10.png   sprites activos: 12 de 32
+docs/img/seq/c11.png   sprites activos: 13 de 32
