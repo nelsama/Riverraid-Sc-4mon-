@@ -151,6 +151,7 @@ static uint8_t  scroll_step;
 #define TILE_EDGE_R1  0x1A   /* arena en el borde DERECHO (variante B)   */
 #define TILE_TREE     0x1B   /* arbusto sobre la isla central            */
 #define TILE_PANEL    0x1C   /* fondo solido del panel de GAME OVER       */
+#define TILE_BRIDGE   0x1D   /* viga del puente (arena maciza)            */
 
 /* ===========================================================================
  * PALETAS
@@ -381,6 +382,12 @@ static const uint8_t tile_edge_r1_p1[8] = { 0xE0, 0xE0, 0xE0, 0xE0, 0xF0, 0xF0, 
  *   3 = agua, 1 = arena, 2 = vegetacion */
 static const uint8_t tile_tree_p0[8] = { 0xFF,0xFF,0x3B,0x0B,0x05,0x0D,0x03,0x03 };
 static const uint8_t tile_tree_p1[8] = { 0x1F,0x07,0xC3,0xF1,0xF9,0xF8,0xFC,0xFC };
+
+/* VIGA DEL PUENTE: madera maciza en ARENA. En PAL_ISLAND (1=arena, 2=veg,
+ * 3=azul) el indice 2 es vegetacion, asi que la viga va en el INDICE 1:
+ * plan0=1 y plan1=0 en toda la celda -> indice (0<<1)|1 = 1 = arena. */
+static const uint8_t tile_bridge_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+static const uint8_t tile_bridge_p1[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
 
 /* Fondo del panel de GAME OVER: opaco y en INDICE 1, que en PAL_MENU es el
  * NEGRO. La fuente siempre pinta el indice 3 (BLANCO en PAL_MENU), asi que
@@ -664,6 +671,28 @@ static void hud_draw(void) {
  * golpe cada bloque, pero el cauce se mueve hacia el a razon de 1 celda por
  * fila. Asi el borde nunca "vibra" (0 saltos medidos) y la partida del cauce
  * nace y muere progresivamente, sin piezas sueltas ni islas fantasma. */
+/* ===========================================================================
+ * GENERADOR DEL CAUCE (LFSR + CURVA + ISLA + SECTOR)
+ * ===========================================================================
+ * Reparto de bits elegido: el de la "Especificacion Tecnica Profunda"
+ * (docs/Especificación Técnica Profunda ... .md), no el del .docx corto.
+ * Los dos documentos NO coinciden, y este es el unico que da CURVA:
+ *
+ *   bits 0-3  -> ANCHO del cauce        W = (va & 0x0F) + 4 celdas (4..19)
+ *   bits 4-6  -> CURVA (desplaza el centro)  C = ((va >> 4) & 7) - 3 celdas
+ *   bits 7-8  -> ISLA (parte el cauce)      00 = si
+ *   bits 9-11 -> ENTIDAD del bloque
+ *
+ * Ademas, en bloques de 32 filas y 16 bloques por sector:
+ *   bloque 15 del sector -> EMBUDO: el cauce se cierra y se centra para que
+ *                           el puente encaje (como el original)
+ *   bloque 16 del sector -> PUENTE (marca de nivel)
+ *
+ * INTERPOLACION: el borde no salta de un bloque al siguiente. Cada fila mueve
+ * el borde 1 celda hacia el objetivo del bloque (lo dice el documento:
+ * "interpolacion lineal scanline por scanline"). Asi el cauce serpentea y se
+ * ensancha sin escalones de golpe y sin vibracion.
+ * =========================================================================== */
 /* OJO: GEN_BLOCK tiene que DIVIDIR A 32 (filas de la cinta de scroll).
  *
  * Con 40 el nivel de ancho cambiaba a mitad de cinta (n=40 -> cinta 8) y al
@@ -671,30 +700,56 @@ static void hud_draw(void) {
  * pantalla acortandose y la otra bajaba. Ese era el "el cauce se va componiendo
  * sobre el anterior". Con un divisor de 32 cada tramo de ancho ocupa filas
  * contiguas de la cinta, asi que baja ENTERO y sale por abajo. */
-#define GEN_BLOCK      32     /* filas por tramo: recto y largo como GAME.BIN */
+#define GEN_BLOCK      16     /* filas de mundo por bloque (medio tramo)  */
+#define GEN_SECTOR     16     /* bloques entre puentes (1 puente cada uno)*/
 #define GEN_AHEAD      2      /* filas de cinta fuera de la vista (ver
                                * advance_scroll): 32 de cinta - 30 visibles */
-/* El cauce del arcade ocupa la mayor parte de la pantalla: SEMIANCHO de 5 a 9
- * celdas = 10..19 celdas de agua. Estrecharlo mas dejaba "dos rayas" con la
- * orilla pegada al centro (bug visto en captura). */
-#define GEN_HALF_MIN   5      /* semiancho minimo del agua (cauce >= 11) */
-#define GEN_HALF_MAX   9      /* semiancho maximo del agua               */
-/* La tierra que parte el cauce ocupa el centro SIN robar agua: el cauce se
- * ensancha lo justo (asi cada brazo conserva su semiancho). */
-#define GEN_SPLIT_HALF 3      /* semiancho de la tierra central (7 celdas) */
+#define GEN_W_MIN      5      /* ancho minimo del cauce (celdas de agua)  */
+#define GEN_W_MAX      20     /* ancho maximo (cabe en la cinta)          */
+#define GEN_CURVE_MAX  3      /* desplazamiento maximo del centro         */
+/* La isla parte el cauce en dos. Deja un brazo jugable a cada lado: menos de
+ * esto y el avion (2 celdas de ancho) no puede pasar. */
+#define GEN_ARM_MIN    5      /* ancho minimo de cada brazo               */
+#define GEN_ISLAND_W   5      /* ancho de la tierra central (celdas)      */
+
+/* PUENTE: coordenadas FIJAS (documento de puentes, X1=34 X2=66 sobre 100).
+ * Sobre 100 de ancho de pantalla -> 13,6..26,4; en nuestras 40 columnas
+ * visibles eso es 13..26 (14 celdas), SIEMPRE el mismo ancho y centrado. El
+ * embudo converge aqui para que el puente encaje igual todos los tramos. */
+#define GEN_PIER_L     13     /* borde izquierdo del cauce en el puente   */
+#define GEN_PIER_R     26     /* borde derecho                            */
+#define GEN_FUNNEL_BLK 14     /* primer bloque de embudo (14 y 15)        */
+
+/* Limites de la zona de agua dentro de la cinta (deja cesped a los lados). */
+#define GEN_ZONE_L     7      /* primera columna jugable                  */
+#define GEN_ZONE_R     33     /* ultima  (cinta de 64, 40 visibles)       */
 
 static uint8_t  gen_seed_hi = 0xA8;   /* SEED_HI del original */
 static uint8_t  gen_seed_lo = 0x14;   /* SEED_LO del original */
 static uint8_t  gen_half;             /* semiancho del agua (sin tierra)   */
-static uint8_t  gen_target_half;      /* semiancho objetivo del bloque     */
 static uint8_t  gen_total_half;       /* semiancho del cauce dibujado      */
-static uint8_t  gen_level;            /* muesca del escalon (0..2 celdas)   */
-static uint8_t  gen_left;             /* borde izquierdo de agua de la fila */
-static uint8_t  gen_right;            /* borde derecho de agua de la fila   */
+static uint8_t  gen_left;             /* borde izquierdo de agua (fila)   */
+static uint8_t  gen_right;            /* borde derecho de agua (fila)     */
+static uint8_t  gen_t_left;           /* objetivo del bloque en curso     */
+static uint8_t  gen_t_right;          /* (se interpola 1 celda por fila)  */
+static uint8_t  gen_split_on;         /* 1 = este tramo tiene tierra      */
 static uint8_t  gen_split_w;          /* semiancho actual de la tierra    */
-static uint8_t  gen_want_split;       /* 1 = el bloque pide partir        */
-static uint8_t  gen_entity;           /* entidad del bloque (bits 6-8)    */
-static uint16_t gen_block_row;        /* filas desde el ultimo bloque     */
+static uint8_t  gen_split_target;     /* semiancho objetivo de la tierra  */
+static uint8_t  gen_entity;           /* entidad del bloque (bits 9-11)   */
+static uint8_t  gen_funnel;           /* 1 = bloque de embudo (pre-puente)*/
+static uint8_t  gen_bridge;           /* 1 = esta fila es del PUENTE      */
+static uint8_t  gen_block_row;        /* filas desde el ultimo bloque     */
+static uint8_t  gen_block_idx;        /* bloque dentro del sector (0..15) */
+static uint16_t gen_sector;           /* numero de sector (= puente)      */
+
+/* CHECKPOINT (documento de puentes): al cruzar un puente se guarda el estado
+ * del generador; al morir se restaura y el tramo se vuelve a empezar. Asi cada
+ * puente marca un nivel de verdad. */
+static uint8_t  cp_hi, cp_lo;         /* semilla guardada                 */
+static uint8_t  cp_block_row;         /* filas dentro del bloque          */
+static uint8_t  cp_block_idx;         /* bloque del tramo                 */
+static uint16_t cp_sector;            /* numero de puente                 */
+static uint8_t  gen_crossed;          /* 1 = se acaba de cruzar un puente */
 
 /* Un paso del LFSR: reproduce exactamente el ASM del 2600. */
 static void gen_lfsr_step(void) {
@@ -716,24 +771,88 @@ static uint8_t gen_curve_toward(uint8_t cur, uint8_t target) {
     return cur;
 }
 
-/* Precalcula el bloque: avanza el LFSR y fija el ancho objetivo del tramo. */
+/* Precalcula el bloque: avanza el LFSR y fija el ANCHO, la CURVA y la ISLA
+ * objetivos del tramo. Los bordes actuales se acercan a ellos 1 celda por
+ * fila (interpolacion). */
 static void gen_new_block(void) {
-    uint8_t w;
+    uint8_t w, c, center, l, r;
 
     gen_lfsr_step();
 
-    /* Ancho objetivo: (SEED_LO & 0x0F) + 4 celdas -> semiancho del agua.
-     * OJO: (x & 0x0F) + 4 da 4..19 CELDAS; hay que pasarlo a semiancho y
-     * dejarlo en el rango navegable. Antes se truncaba a 2..9 y el rio se
-     * quedaba en dos rayas. */
-    w = (uint8_t)(((gen_seed_lo & 0x0F) + 4 + 1) >> 1);
-    if (w < GEN_HALF_MIN) w = GEN_HALF_MIN;
-    if (w > GEN_HALF_MAX) w = GEN_HALF_MAX;
-    gen_target_half = w;
+    /* --- Sector: 16 bloques y el 16 es el puente --- */
+    gen_block_idx++;
+    gen_funnel = 0;
+    gen_bridge = 0;
 
-    /* Entidad del bloque (bits 6-8). */
-    gen_entity = (uint8_t)((gen_seed_hi >> 6) & 0x07);
+    if (gen_block_idx >= GEN_SECTOR) {
+        /* PUENTE: cuenta como nivel y usa el ancho FIJO del puente (el embudo
+         * de los bloques 14 y 15 ya ha llevado el cauce hasta ahi). */
+        gen_bridge = 1;
+        gen_sector++;
+        gen_block_idx = 0;
+        gen_t_left  = GEN_PIER_L;
+        gen_t_right = GEN_PIER_R;
+        gen_split_on = 0;
+        gen_split_target = 0;
+        gen_entity = 0;
+        return;
+    }
+
+    if (gen_block_idx >= GEN_FUNNEL_BLK) {
+        /* EMBUDO (bloques 14 y 15): el cauce CONVERGE a las coordenadas fijas
+         * del puente y se apaga la generacion de islas, para que el puente
+         * siempre caiga sobre un cauce centrado y sin obstaculos. */
+        gen_funnel = 1;
+        gen_t_left  = GEN_PIER_L;
+        gen_t_right = GEN_PIER_R;
+        gen_split_target = 0;
+        gen_split_on = (uint8_t)(gen_split_w != 0);
+        gen_entity = 0;
+        return;
+    }
+
+    /* --- Ancho del cauce: bits 0-3 --- */
+    w = (uint8_t)((gen_seed_lo & 0x0F) + 4);
+    if (w < GEN_W_MIN) w = GEN_W_MIN;
+    if (w > GEN_W_MAX) w = GEN_W_MAX;
+
+    /* --- Curva: bits 4-6 desplazan el CENTRO (el cauce serpentea) --- */
+    c = (uint8_t)((gen_seed_hi >> 4) & 0x07);        /* 0..7 */
+    if (c > 6) c = 5;                                /* 0..5 */
+    if (c >= 3) c = (uint8_t)(c - 3);                /* derecha */
+    else        c = (uint8_t)(3 - c);                /* izquierda */
+    if (c > GEN_CURVE_MAX) c = GEN_CURVE_MAX;
+    {
+        uint8_t mid = (uint8_t)((GEN_ZONE_L + GEN_ZONE_R + 1) / 2);
+        if (gen_seed_hi & 0x40) center = (uint8_t)(mid + c);
+        else                     center = (uint8_t)(mid - c);
+    }
+    l = (uint8_t)(center - (w / 2));
+    r = (uint8_t)(l + w - 1);
+    if (l < GEN_ZONE_L) { l = GEN_ZONE_L; r = (uint8_t)(l + w - 1); }
+    if (r > GEN_ZONE_R) { r = GEN_ZONE_R; l = (uint8_t)(r - w + 1); }
+    gen_t_left  = l;
+    gen_t_right = r;
+
+    /* --- Isla: bits 7-8, solo si caben dos brazos navegables ---
+     * OJO: `((gen_seed_lo >> 7) & 3) == 0` pide dos bits a cero y el LFSR los
+     * da a la vez solo el 10% de las veces: la isla salia casi nunca. Se usa
+     * el bit 7, que es 1 de cada 2 y coincide con "00" la mitad de las veces
+     * (el otro bit que pedia el documento no es posible tenerlo junto). */
+    if ((gen_seed_lo & 0x80) == 0 &&
+        (uint8_t)(w - GEN_ISLAND_W) >= (2 * GEN_ARM_MIN)) {
+        gen_split_target = (uint8_t)(GEN_ISLAND_W / 2);
+        gen_split_on = 1;
+    } else {
+        gen_split_target = 0;
+        gen_split_on = 0;
+    }
+
+    /* --- Entidad del bloque: bits 9-11 (0 fuel, 1 barco, 2 heli, 3 jet...) - */
+    gen_entity = (uint8_t)((gen_seed_hi >> 1) & 0x07);
 }
+
+static void gen_save_checkpoint(void);
 
 /* Reinicia el generador al estado del puente inicial (partida nueva).
  * Devuelve gen_block_row a 1: la fila de mundo 0 YA la ha generado el marcador
@@ -743,13 +862,50 @@ static void gen_new_block(void) {
 static void gen_reset(void) {
     gen_seed_hi = 0xA8;
     gen_seed_lo = 0x14;
-    gen_half    = GEN_HALF_MIN;
-    gen_target_half = GEN_HALF_MIN;
-    gen_total_half = GEN_HALF_MIN;
-    gen_level = 0;
+    gen_left    = GEN_ZONE_L + 4;
+    gen_right   = GEN_ZONE_R - 4;
+    gen_t_left  = gen_left;
+    gen_t_right = gen_right;
+    gen_half    = (uint8_t)((gen_right - gen_left + 1) / 2);
+    gen_total_half = gen_half;
+    gen_split_on = 0;
     gen_split_w = 0;
+    gen_split_target = 0;
     gen_entity  = 0;
-    gen_block_row = 1;
+    gen_funnel  = 0;
+    gen_bridge  = 0;
+    /* El LFSR arranca limpio (bloque 1) y el sector es el 1: el bloque 0 y el
+     * 16 del sector dan la MISMA forma si se avanza el registro antes de
+     * mirar, asi que se entra ya en el bloque 1. Ver generate_world_row(). */
+    gen_block_row = 0;
+    gen_block_idx = 1;
+    gen_sector    = 1;
+    gen_lfsr_step();          /* consume el valor del bloque 0 */
+    gen_new_block();
+
+    /* Checkpoint inicial = estado de salida del tramo 1. */
+    gen_crossed = 0;
+    gen_save_checkpoint();
+}
+
+/* Guarda el estado del generador en el ultimo puente cruzado. */
+static void gen_save_checkpoint(void) {
+    cp_hi        = gen_seed_hi;
+    cp_lo        = gen_seed_lo;
+    cp_block_row = gen_block_row;
+    cp_block_idx = gen_block_idx;
+    cp_sector    = gen_sector;
+}
+
+/* Vuelve al ultimo checkpoint (al perder una vida). El tramo se reinicia con
+ * la MISMA forma que la primera vez, como en el arcade. */
+static void gen_restore_checkpoint(void) {
+    gen_seed_hi   = cp_hi;
+    gen_seed_lo   = cp_lo;
+    gen_block_row = cp_block_row;
+    gen_block_idx = cp_block_idx;
+    gen_sector    = cp_sector;
+    gen_crossed   = 0;
 }
 
 /* -------------------------------------------------------------------------
@@ -792,54 +948,58 @@ static uint8_t generate_world_row(uint32_t n) {
     uint8_t knee_l, knee_r;
 
     /* --- Bloque del LFSR ---
-     * El registro se avanza cada GEN_BLOCK filas. gen_block_row cuenta las
-     * filas ya generadas DENTRO del bloque, asi que la 0 del bloque es la 0. */
-    if (gen_block_row >= GEN_BLOCK) { gen_block_row = 0; gen_new_block(); }
-    gen_block_row++;
+     * Cada GEN_BLOCK filas se precalcula el siguiente bloque (ancho, curva,
+     * isla, entidad y si es embudo o puente). gen_block_row cuenta las filas
+     * ya generadas con el bloque actual. */
+    if (gen_block_row == 0) { gen_new_block(); }
+    if (++gen_block_row >= GEN_BLOCK) gen_block_row = 0;
 
-    /* --- Ancho del cauce: tramo LARGO y recto, escalon de 1 celda ---
-     *
-     * Medido en el binario de referencia (output/referencia_buena.bin): el
-     * cauce se queda practicamente recto durante casi toda la pantalla y el
-     * cambio de ancho es un escalon recto corto, simetrico en los dos bordes.
-     *
-     * Por eso: el nivel se mantiene GEN_BLOCK filas (32) y solo cambia +-1
-     * celda por lado y solo cuando el LFSR lo pide. Antes cambiaba cada 8
-     * filas y con mas amplitud: se veia un zigzag/degradado compuesto. */
-    if ((n % GEN_BLOCK) == 0) {
-        uint8_t want = (uint8_t)(gen_seed_lo & 0x03);
-        if (want > 2) want = 1;          /* 0,1,2,1: amplitud +-1 celda */
-        gen_level = want;
+    /* Cruzar el puente = nuevo checkpoint. Solo cuenta una vez por puente. */
+    if (!gen_bridge) {
+        if (gen_crossed) {
+            gen_save_checkpoint();
+            gen_crossed = 0;
+        }
+    } else if (!gen_crossed) {
+        gen_crossed = 1;
     }
 
+    /* --- Ancho y CURVA: los bordes se acercan al objetivo 1 celda por fila ---
+     *
+     * Interpolacion (documento): no se salta del ancho de un bloque al del
+     * siguiente, se DIBUJA la transicion. Asi el cauce serpentea y se ensancha
+     * suavemente y el borde nunca vibra. */
+    gen_left  = gen_curve_toward(gen_left,  gen_t_left);
+    gen_right = gen_curve_toward(gen_right, gen_t_right);
+    if (gen_left + 3 > gen_right) {          /* nunca menos de 4 celdas */
+        gen_right = (uint8_t)(gen_left + 3);
+    }
+    gen_half = (uint8_t)((gen_right - gen_left + 1) / 2);
+
+    /* --- Tierra central: crece y se encoge 1 celda por fila --- */
     {
-        uint8_t off = gen_level;
-        gen_left  = (uint8_t)(RIVER_LEFT + 2 + off);
-        gen_right = (uint8_t)(RIVER_RIGHT - 2 - off);
-        gen_half  = (uint8_t)((gen_right - gen_left + 1) / 2);
+        uint8_t goal = (uint8_t)(gen_split_on ? gen_split_target : 0);
+        if (gen_split_w < goal) gen_split_w++;
+        else if (gen_split_w > goal) gen_split_w--;
     }
-
-    /* --- Tierra central (isla del río) ---
-     * Los bits 4-5 del byte alto piden partir el cauce. Solo si el agua es
-     * ancha: la isla ocupa 2 celdas en el CENTRO y deja brazos navegables. */
     gen_total_half = gen_half;
-    if (((gen_seed_hi >> 4) & 0x03) == 0 &&
-        (gen_right - gen_left + 1) >= 14) {
-        gen_split_w = 2;
-    } else {
-        gen_split_w = 0;
+
+    /* Un cauce de un solo tramo y muy estrecho no puede llevar isla: los dos
+     * brazos quedarian sin sitio para el avion. */
+    if (gen_split_w && (gen_right - gen_left + 1) < (uint8_t)(GEN_ISLAND_W + 2 * GEN_ARM_MIN)) {
+        gen_split_w = (uint8_t)(gen_split_w - 1);
     }
 
     /* El cauce se reparte alrededor del CENTRO de la zona de agua. */
     {
-        uint8_t center = (uint8_t)((RIVER_LEFT + RIVER_RIGHT + 1) / 2);
+        uint8_t center = (uint8_t)((GEN_ZONE_L + GEN_ZONE_R + 1) / 2);
         gen_left  = (uint8_t)(center - gen_total_half);
         gen_right = (uint8_t)(center + gen_total_half - 1);
     }
 
     /* Tierra central que parte el cauce (no es una entidad: es terreno). */
     if (gen_split_w) {
-        uint8_t center = (uint8_t)((RIVER_LEFT + RIVER_RIGHT + 1) / 2);
+        uint8_t center = (uint8_t)((GEN_ZONE_L + GEN_ZONE_R + 1) / 2);
         il = (uint8_t)(center - gen_split_w);
         ir = (uint8_t)(center + gen_split_w - 1);
     }
@@ -896,6 +1056,18 @@ static uint8_t generate_world_row(uint32_t n) {
                 }
             } else {
                 tile = wave;                             attr = PAL_WATER;
+            }
+
+            /* --- MARCA DE PUENTE (provisional) ---
+             * El puente cierra el sector: es la "linea de nivel". Todavia no
+             * hay tiles de puente ni colision, asi que se marca con las celdas
+             * de orilla (arena) a lo ancho del CAUCE. OJO: solo de gen_left a
+             * gen_right; si se pinta toda la cinta invade el cesped de los lados
+             * (bug visto en captura). Cuando exista el puente de verdad, estas
+             * filas pasan a ser sus tiles y el avion no podra atravesarlas. */
+            if (gen_bridge && col >= gen_left && col <= gen_right) {
+                tile = TILE_BRIDGE;
+                attr = PAL_ISLAND;         /* arena maciza */
             }
 
             VID_ADDR_LO = (uint8_t)cell;
@@ -986,6 +1158,7 @@ static void setup_video(void) {
     vc_load_bg_pattern(TILE_EDGE_R0, tile_edge_r0_p0, tile_edge_r0_p1);
     vc_load_bg_pattern(TILE_EDGE_R1, tile_edge_r1_p0, tile_edge_r1_p1);
     vc_load_bg_pattern(TILE_TREE,    tile_tree_p0,    tile_tree_p1);
+    vc_load_bg_pattern(TILE_BRIDGE,  tile_bridge_p0,  tile_bridge_p1);
     /* Fondo opaco del panel de GAME OVER (TILE_PANEL usa el indice 1). */
     vc_load_bg_pattern(TILE_PANEL,   tile_panel_p0,   tile_panel_p1);
 
@@ -1376,6 +1549,8 @@ static void plane_place_safe(void) {
 /* Tras un choque el avion NO sigue donde estaba: vuelve al punto de partida
  * (centro del cauce, altura fija) y el scroll regresa a su velocidad normal. */
 static void plane_respawn(void) {
+    uint8_t r;
+
     plane_dead = 0;
     plane_dead_frames = 0;
 
@@ -1385,6 +1560,30 @@ static void plane_respawn(void) {
         snd_gameover();
         return;
     }
+
+    /* CHECKPOINT: se vuelve al puente cruzado (documento de puentes). El
+     * tramo se regenera con la MISMA forma y se reinicia el scroll, de modo
+     * que "cada puente marca un nivel" de verdad: morir hace repetir el tramo.
+     *
+     * Se regenera la cinta entera porque el rio entero avanza varios tramos:
+     * basta con repintar las 32 filas desde la posicion nueva y volver a
+     * colocar la camara. Coste: ~1 vez por vida, no por frame. */
+    gen_restore_checkpoint();
+    scroll_total = (uint32_t)((VC_MAP_ROWS - 1) * 8);
+    scroll_val   = (uint16_t)((0 - scroll_total) & 0xFF);
+    world_row    = VC_MAP_ROWS - 2;
+    vc_set_scroll_y(scroll_val);
+    for (r = 0; r < VC_MAP_ROWS; r++) {
+        generate_world_row((uint32_t)r);
+    }
+
+    /* El barco y el bidon vuelven a su sitio del tramo. */
+    boat_active = 0;
+    boat_next   = 40;
+    boat_y      = 0;
+    fuel_active = 0;
+    fuel_next   = 2;
+    fuel_y      = 0;
 
     plane_place_safe();
     scroll_speed = SCROLL_NORM;
