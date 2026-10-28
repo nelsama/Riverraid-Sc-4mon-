@@ -13,3 +13,4 @@ symbols.txt
 cap*/
 __pycache__/
 *.pyc
+.tmp/

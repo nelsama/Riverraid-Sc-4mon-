@@ -704,20 +704,25 @@ static void hud_draw(void) {
 #define GEN_SECTOR     16     /* bloques entre puentes (1 puente cada uno)*/
 #define GEN_AHEAD      2      /* filas de cinta fuera de la vista (ver
                                * advance_scroll): 32 de cinta - 30 visibles */
-#define GEN_W_MIN      5      /* ancho minimo del cauce (celdas de agua)  */
-#define GEN_W_MAX      20     /* ancho maximo (cabe en la cinta)          */
+#define GEN_W_MIN      6      /* ancho minimo del cauce (celdas de agua)  */
+#define GEN_W_MAX      20     /* ancho maximo sin isla (cabe en la cinta) */
 #define GEN_CURVE_MAX  3      /* desplazamiento maximo del centro         */
-/* La isla parte el cauce en dos. Deja un brazo jugable a cada lado: menos de
- * esto y el avion (2 celdas de ancho) no puede pasar. */
-#define GEN_ARM_MIN    5      /* ancho minimo de cada brazo               */
-#define GEN_ISLAND_W   5      /* ancho de la tierra central (celdas)      */
+/* ISLA: GEN_ISLAND_W es el HUECO central (suelo + las dos orillas), o sea las
+ * columnas de tierra que se ven. Con 9 columnas y dos brazos de 5 el cauce se
+ * abre a GEN_SPLIT_W = 19 celdas. */
+#define GEN_ARM_MIN    5      /* ancho de cada brazo con isla             */
+#define GEN_ISLAND_W   9      /* isla visible = 9 columnas de tierra      */
+/* Con isla el cauce se abre hasta GEN_SPLIT_W: el rio se ensancha para que
+ * quepan la tierra central y los dos brazos. */
+#define GEN_SPLIT_W    (GEN_ISLAND_W + 2 * GEN_ARM_MIN)   /* 19 */
 
 /* PUENTE: coordenadas FIJAS (documento de puentes, X1=34 X2=66 sobre 100).
  * Sobre 100 de ancho de pantalla -> 13,6..26,4; en nuestras 40 columnas
- * visibles eso es 13..26 (14 celdas), SIEMPRE el mismo ancho y centrado. El
- * embudo converge aqui para que el puente encaje igual todos los tramos. */
-#define GEN_PIER_L     13     /* borde izquierdo del cauce en el puente   */
-#define GEN_PIER_R     26     /* borde derecho                            */
+ * visibles eso es 13..26 en el CAUCE, o sea 12..27 contando las orillas. El
+ * embudo converge aqui para que el puente encaje igual todos los tramos y el
+ * cauce se vea ANGOSTARSE al llegar y ENSANCHARSE despues. */
+#define GEN_PIER_L     12     /* borde izquierdo del cauce en el puente   */
+#define GEN_PIER_R     27     /* borde derecho (= 12..27 con orillas)     */
 #define GEN_FUNNEL_BLK 14     /* primer bloque de embudo (14 y 15)        */
 
 /* Limites de la zona de agua dentro de la cinta (deja cesped a los lados). */
@@ -733,7 +738,7 @@ static uint8_t  gen_right;            /* borde derecho de agua (fila)     */
 static uint8_t  gen_t_left;           /* objetivo del bloque en curso     */
 static uint8_t  gen_t_right;          /* (se interpola 1 celda por fila)  */
 static uint8_t  gen_split_on;         /* 1 = este tramo tiene tierra      */
-static uint8_t  gen_split_w;          /* semiancho actual de la tierra    */
+static uint8_t  gen_split_w;          /* ancho ACTUAL de la isla (1..9)   */
 static uint8_t  gen_split_target;     /* semiancho objetivo de la tierra  */
 static uint8_t  gen_entity;           /* entidad del bloque (bits 9-11)   */
 static uint8_t  gen_funnel;           /* 1 = bloque de embudo (pre-puente)*/
@@ -769,6 +774,22 @@ static uint8_t gen_curve_toward(uint8_t cur, uint8_t target) {
     if (cur < target) return (uint8_t)(cur + 1);
     if (cur > target) return (uint8_t)(cur - 1);
     return cur;
+}
+
+/* Ancho del cauce segun los bits 0-3 del LFSR.
+ *
+ * OJO: `(bits & 0x0F) + 4` da 4..19 celdas sobre una zona de 27, y medido con
+ * el LFSR real los 7 primeros bloques caen en 4..9: el arranque salia en un
+ * canal de 6 celdas, casi una rendija. El documento asume una pantalla de 100
+ * unidades, no nuestras 27 celdas; aqui se reparte en el rango jugable con una
+ * TABLA: la escala lineal dejaba los estrechamientos casi sin usar y el cauce
+ * pasaba casi siempre por los mismos dos anchos. */
+static const uint8_t gen_width_tab[16] = {
+    6, 7, 8, 9, 10, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+};
+
+static uint8_t gen_width_from(bits) {
+    return gen_width_tab[bits & 0x0F];
 }
 
 /* Precalcula el bloque: avanza el LFSR y fija el ANCHO, la CURVA y la ISLA
@@ -811,10 +832,8 @@ static void gen_new_block(void) {
         return;
     }
 
-    /* --- Ancho del cauce: bits 0-3 --- */
-    w = (uint8_t)((gen_seed_lo & 0x0F) + 4);
-    if (w < GEN_W_MIN) w = GEN_W_MIN;
-    if (w > GEN_W_MAX) w = GEN_W_MAX;
+    /* --- Ancho del cauce: bits 0-3 (escalado al rango jugable) --- */
+    w = gen_width_from(gen_seed_lo);
 
     /* --- Curva: bits 4-6 desplazan el CENTRO (el cauce serpentea) --- */
     c = (uint8_t)((gen_seed_hi >> 4) & 0x07);        /* 0..7 */
@@ -839,9 +858,11 @@ static void gen_new_block(void) {
      * da a la vez solo el 10% de las veces: la isla salia casi nunca. Se usa
      * el bit 7, que es 1 de cada 2 y coincide con "00" la mitad de las veces
      * (el otro bit que pedia el documento no es posible tenerlo junto). */
-    if ((gen_seed_lo & 0x80) == 0 &&
-        (uint8_t)(w - GEN_ISLAND_W) >= (2 * GEN_ARM_MIN)) {
-        gen_split_target = (uint8_t)(GEN_ISLAND_W / 2);
+    if ((gen_seed_lo & 0x80) == 0) {
+        /* El ensanche del cauce para que quepa la isla se hace al generar la
+         * fila (generate_world_row), donde ya se conoce el ancho real. El
+         * objetivo es el ANCHO de la isla en columnas (9), no su semiancho. */
+        gen_split_target = GEN_ISLAND_W;
         gen_split_on = 1;
     } else {
         gen_split_target = 0;
@@ -862,8 +883,8 @@ static void gen_save_checkpoint(void);
 static void gen_reset(void) {
     gen_seed_hi = 0xA8;
     gen_seed_lo = 0x14;
-    gen_left    = GEN_ZONE_L + 4;
-    gen_right   = GEN_ZONE_R - 4;
+    gen_left    = GEN_ZONE_L + 1;
+    gen_right   = GEN_ZONE_R - 1;
     gen_t_left  = gen_left;
     gen_t_right = gen_right;
     gen_half    = (uint8_t)((gen_right - gen_left + 1) / 2);
@@ -874,13 +895,13 @@ static void gen_reset(void) {
     gen_entity  = 0;
     gen_funnel  = 0;
     gen_bridge  = 0;
-    /* El LFSR arranca limpio (bloque 1) y el sector es el 1: el bloque 0 y el
-     * 16 del sector dan la MISMA forma si se avanza el registro antes de
-     * mirar, asi que se entra ya en el bloque 1. Ver generate_world_row(). */
+    /* Se entra en el bloque 1 del tramo 1: el bloque 0 es el puente y al
+     * arrancar ya se ha cruzado (si no, la partida empieza dentro del puente).
+     * OJO: aqui NO se avanza el LFSR; el valor del bloque 0 lo consume
+     * gen_new_block(), igual que en todos los demas bloques. */
     gen_block_row = 0;
     gen_block_idx = 1;
     gen_sector    = 1;
-    gen_lfsr_step();          /* consume el valor del bloque 0 */
     gen_new_block();
 
     /* Checkpoint inicial = estado de salida del tramo 1. */
@@ -982,26 +1003,57 @@ static uint8_t generate_world_row(uint32_t n) {
         if (gen_split_w < goal) gen_split_w++;
         else if (gen_split_w > goal) gen_split_w--;
     }
-    gen_total_half = gen_half;
-
-    /* Un cauce de un solo tramo y muy estrecho no puede llevar isla: los dos
-     * brazos quedarian sin sitio para el avion. */
-    if (gen_split_w && (gen_right - gen_left + 1) < (uint8_t)(GEN_ISLAND_W + 2 * GEN_ARM_MIN)) {
-        gen_split_w = (uint8_t)(gen_split_w - 1);
-    }
-
-    /* El cauce se reparte alrededor del CENTRO de la zona de agua. */
+    /* El cauce se reparte alrededor del CENTRO de la zona de agua.
+     * Si en esta fila hay isla, el cauce se ENSANCHA para que quepan la
+     * tierra y los dos brazos (el original tambien abre el rio). Se recalcula
+     * DESPUES de saber si hay isla, que es lo que fallaba antes. */
     {
         uint8_t center = (uint8_t)((GEN_ZONE_L + GEN_ZONE_R + 1) / 2);
-        gen_left  = (uint8_t)(center - gen_total_half);
-        gen_right = (uint8_t)(center + gen_total_half - 1);
+        uint8_t l = gen_left, r = gen_right;
+        uint8_t w = (uint8_t)(r - l + 1);
+
+        if (gen_split_w) {
+            /* Al empezar la isla el cauce se abre DE GOLPE hasta el ancho que
+             * necesita (isla + dos brazos). Interpolar no vale: la isla dura
+             * pocas filas y el borde solo avanza 1 celda por fila, asi que el
+             * ensanche no llegaba nunca y los brazos quedaban en 4. Al salir
+             * de la isla si se estrecha progresivamente. */
+            w = GEN_SPLIT_W;
+            {
+                uint8_t need = (uint8_t)(gen_split_w + 2 * GEN_ARM_MIN);
+                if (w < need) w = need;
+            }
+        } else if (w > GEN_W_MAX) {
+            /* Sin isla el cauce no puede ser tan ancho que parezca un mar. */
+            w = GEN_W_MAX;
+        }
+
+        /* OJO: se reconstruye por BORDES, no con semiancho. Con semiancho entero
+         * las anchuras impares perdian una celda (17 -> 16) y el ensanche para
+         * la isla no llegaba nunca a la pantalla. */
+        l = (uint8_t)(center - (w / 2));
+        r = (uint8_t)(l + w - 1);
+        gen_left  = l;
+        gen_right = r;
+        gen_half  = (uint8_t)(w / 2);
+        /* OJO: NO se tocan gen_t_left/gen_t_right aqui. Si se copian en cada
+         * fila con isla, el objetivo del bloque queda machacado con el ancho
+         * ensanchado y al salir de la isla el cauce se QUEDA en 19 para
+         * siempre (medido: 60 filas seguidas a 19). El objetivo del bloque
+         * manda; el ensanche solo afecta a esta fila. */
     }
 
     /* Tierra central que parte el cauce (no es una entidad: es terreno). */
     if (gen_split_w) {
-        uint8_t center = (uint8_t)((GEN_ZONE_L + GEN_ZONE_R + 1) / 2);
-        il = (uint8_t)(center - gen_split_w);
-        ir = (uint8_t)(center + gen_split_w - 1);
+        /* La isla crece de 1 a GEN_ISLAND_W columnas VISIBLES (9). gen_split_w
+         * guarda ese ancho en curso, no un semiancho: asi los pasos son 1..9 y
+         * el estado estable es exactamente 9 columnas de tierra. Se deja una
+         * celda mas a la izquierda para que el cauce quede CENTRADO (con un
+         * ancho par el centro cae entre dos celdas). */
+        uint8_t w = gen_split_w;
+        if (w > GEN_ISLAND_W) w = GEN_ISLAND_W;
+        il = (uint8_t)(gen_left + (((gen_right - gen_left + 1) - w) / 2));
+        ir = (uint8_t)(il + w - 1);
     }
 
     /* Guarda el perfil de esta fila ANTES de pintar. Es lo que consulta la
@@ -1054,6 +1106,10 @@ static uint8_t generate_world_row(uint32_t n) {
                     tile = TILE_GRASS;
                     attr = PAL_EDGE;
                 }
+                /* Marca la celda como TIERRA para que el oleaje no la pise
+                 * (update_water_anim borra huecos si repinta un tile que no es
+                 * agua). Se marcaba solo con ISLA_CLR, o sea nunca. */
+                ISLA_SET(cinta_row, col);
             } else {
                 tile = wave;                             attr = PAL_WATER;
             }

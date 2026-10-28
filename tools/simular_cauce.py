@@ -15,20 +15,21 @@ import sys
 GEN_BLOCK = 16
 GEN_SECTOR = 16
 ZONE_L, ZONE_R = 7, 33
-PIER_L, PIER_R = 13, 26
+PIER_L, PIER_R = 12, 27
 FUNNEL_BLK = 14
-W_MIN, W_MAX = 5, 20
+W_MIN, W_MAX = 6, 20
+WIDTH_TAB = [6, 7, 8, 9, 10, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
 CURVE_MAX = 3
 ARM_MIN = 5
-ISLAND_W = 5
+ISLAND_W = 9
+SPLIT_W = ISLAND_W + 2 * ARM_MIN
 
 
 class Gen:
     def __init__(self):
         self.hi, self.lo = 0xA8, 0x14
         mid = (ZONE_L + ZONE_R + 1) // 2
-        self.left = mid - 4
-        self.right = mid + 3
+        self.left, self.right = ZONE_L + 1, ZONE_R - 1
         self.t_left, self.t_right = self.left, self.right
         self.split_w = 0
         self.split_on = 0
@@ -68,8 +69,9 @@ class Gen:
             self.split_on = 1 if self.split_w else 0
             return
 
-        w = (self.lo & 0x0F) + 4
-        w = max(W_MIN, min(W_MAX, w))
+        w = WIDTH_TAB[self.lo & 0x0F]
+        split = (self.lo & 0x80) == 0
+
         c = (self.hi >> 4) & 0x07
         if c > 6:
             c = 5
@@ -88,8 +90,8 @@ class Gen:
             r = ZONE_R
             l = r - w + 1
         self.t_left, self.t_right = l, r
-        if (self.lo & 0x80) == 0 and (w - ISLAND_W) >= 2 * ARM_MIN:
-            self.split_target = ISLAND_W // 2
+        if split:
+            self.split_target = ISLAND_W
             self.split_on = 1
         else:
             self.split_target = 0
@@ -107,21 +109,36 @@ class Gen:
         self.right = self.toward(self.right, self.t_right)
         if self.left + 3 > self.right:
             self.right = self.left + 3
-        half = (self.right - self.left + 1) // 2
-
+        # El ancho en curso puede ser par; se centra en el eje y el cauce debe
+        # ENSANCHARSE para que quepa la isla, no al contrario.
+        left, right = self.left, self.right
         goal = self.split_target if self.split_on else 0
         if self.split_w < goal:
             self.split_w += 1
         elif self.split_w > goal:
             self.split_w -= 1
-        if self.split_w and (self.right - self.left + 1) < (ISLAND_W + 2 * ARM_MIN):
-            self.split_w -= 1
-
         mid = (ZONE_L + ZONE_R + 1) // 2
-        l, r = mid - half, mid + half - 1
+        # Si hay isla, el cauce se ENSANCHA para que quepan tierra y brazos.
+        # Se hace en el mismo orden que game.c: despues de saber la isla.
+        if self.split_w:
+            w_now = right - left + 1
+            target = max(SPLIT_W, self.split_w + 2 * ARM_MIN)
+            l2 = mid - target // 2
+            self.left, self.right = l2, l2 + target - 1
+        elif (right - left + 1) > W_MAX:
+            over = (right - left + 1) - W_MAX
+            l2 = left + over // 2
+            self.left, self.right = l2, l2 + W_MAX - 1
+        else:
+            w_now = min(right - left + 1, W_MAX)
+            l2 = mid - w_now // 2
+            self.left, self.right = l2, l2 + w_now - 1
+        l, r = self.left, self.right
         il = ir = None
         if self.split_w:
-            il, ir = mid - self.split_w, mid + self.split_w - 1
+            ww = min(self.split_w, ISLAND_W)
+            il = self.left + ((self.right - self.left + 1) - ww) // 2
+            ir = il + ww - 1
         return l, r, il, ir, self.bridge, self.funnel, self.block_idx, self.sector
 
 
