@@ -240,7 +240,8 @@ static uint8_t  plane_y;
 static uint16_t scroll_val;   /* valor del registro de scroll (0..255) */
 static uint8_t  scroll_speed; /* 1/8 px por frame: SCROLL_MIN..SCROLL_MAX */
 static uint8_t  scroll_acc;   /* acumulador con los 3 bits fraccionarios  */
-static uint32_t world_row;    /* filas de mundo ya generadas (crece)   */
+static uint32_t world_row;    /* ultima fila de mundo generada         */
+static uint32_t scroll_total; /* pixeles recorridos desde el inicio    */
 static uint8_t  quit_flag;
 static uint8_t  sprites_off;   /* 1 = ya se ocultaron avion/objetos (game over) */
 static uint8_t  oam_cache_invalida;  /* 1 = redibujar TODO el OAM (patron incluido) */
@@ -663,7 +664,16 @@ static void hud_draw(void) {
  * golpe cada bloque, pero el cauce se mueve hacia el a razon de 1 celda por
  * fila. Asi el borde nunca "vibra" (0 saltos medidos) y la partida del cauce
  * nace y muere progresivamente, sin piezas sueltas ni islas fantasma. */
-#define GEN_BLOCK      40     /* filas por tramo: recto y largo como GAME.BIN */
+/* OJO: GEN_BLOCK tiene que DIVIDIR A 32 (filas de la cinta de scroll).
+ *
+ * Con 40 el nivel de ancho cambiaba a mitad de cinta (n=40 -> cinta 8) y al
+ * envolver en n=32 la forma quedaba PARTIDA en dos trozos: una mitad seguia en
+ * pantalla acortandose y la otra bajaba. Ese era el "el cauce se va componiendo
+ * sobre el anterior". Con un divisor de 32 cada tramo de ancho ocupa filas
+ * contiguas de la cinta, asi que baja ENTERO y sale por abajo. */
+#define GEN_BLOCK      32     /* filas por tramo: recto y largo como GAME.BIN */
+#define GEN_AHEAD      2      /* filas de cinta fuera de la vista (ver
+                               * advance_scroll): 32 de cinta - 30 visibles */
 /* El cauce del arcade ocupa la mayor parte de la pantalla: SEMIANCHO de 5 a 9
  * celdas = 10..19 celdas de agua. Estrecharlo mas dejaba "dos rayas" con la
  * orilla pegada al centro (bug visto en captura). */
@@ -725,7 +735,11 @@ static void gen_new_block(void) {
     gen_entity = (uint8_t)((gen_seed_hi >> 6) & 0x07);
 }
 
-/* Reinicia el generador al estado del puente inicial (partida nueva). */
+/* Reinicia el generador al estado del puente inicial (partida nueva).
+ * Devuelve gen_block_row a 1: la fila de mundo 0 YA la ha generado el marcador
+ * de posicion de la cinta (cinta = 32 - 0 = 32, no 0), asi que un LFSR limpio
+ * en la 0 daria el MISMO nivel que en la 32 y la forma del cauce se repetiria
+ * cada 32 filas. Ver generate_world_row(). */
 static void gen_reset(void) {
     gen_seed_hi = 0xA8;
     gen_seed_lo = 0x14;
@@ -735,8 +749,30 @@ static void gen_reset(void) {
     gen_level = 0;
     gen_split_w = 0;
     gen_entity  = 0;
-    gen_block_row = 0;
+    gen_block_row = 1;
 }
+
+/* -------------------------------------------------------------------------
+ * FILA DE CINTA DE UNA FILA DE MUNDO: cinta = (-n) & 31
+ *
+ * En este core la celda que se ve arriba es, por la guia del emulador:
+ *     fila_visible = ((punto_y + scroll_y) / 8) mod 32
+ * El juego hace DECRECER scroll_val para que el terreno baje, y la celda de
+ * pantalla y=0 se ve en scroll_val. La fila de mundo que esta en pantalla es
+ *     fila_mundo = scroll_total / 8
+ * asi que la de arriba tiene que estar en cinta (32 - fila_mundo) & 31, y al
+ * crecer fila_mundo el indice BAJA: el mundo sube de indice de cinta, o sea el
+ * terreno baja por pantalla con la velocidad real del scroll. Es la misma
+ * formula que usa la colision (scroll_val + y) >> 3.
+ *
+ * No se puede usar n & 31 directamente: eso ordena las filas al reves y el
+ * perfil del cauce se movia en contra del scroll (medido: los tramos se
+ * acortaban por abajo en vez de bajar enteros).
+ *
+ * En pantalla se ven 30 filas de cinta (40x30), asi que hay DOS filas de la
+ * cinta fuera de la vista: la 31 (por arriba) y la 30 (por abajo). Son las
+ * unicas que se pueden reescribir sin tocar lo que ve el jugador.
+ * ---------------------------------------------------------------------- */
 
 /* ===========================================================================
  * GENERACION DE UNA FILA DE MUNDO (n)
@@ -746,19 +782,20 @@ static void gen_reset(void) {
  * entidad: crece y se encoge 1 celda por fila, asi que la partida nunca aparece
  * ni desaparece de golpe.
  * =========================================================================== */
-/* Genera una fila de mundo. Devuelve SIEMPRE 1: ninguna fila escribe en
+/* Genera la fila de mundo n. Devuelve SIEMPRE 1: ninguna fila escribe en
  * vecinas, asi que no se puede pisar la fila que se acaba de pintar. */
 static uint8_t generate_world_row(uint32_t n) {
-    uint8_t cinta_row = (uint8_t)(n & 31);
+    uint8_t cinta_row = (uint8_t)((VC_MAP_ROWS - n) & (VC_MAP_ROWS - 1));
     uint8_t wave = (uint8_t)((n & 1) ? TILE_WATER2 : TILE_WATER);
     uint8_t col;
     uint8_t il = 0xFF, ir = 0xFF;
     uint8_t knee_l, knee_r;
 
     /* --- Bloque del LFSR ---
-     * El registro se avanza cada GEN_BLOCK filas. */
-    if (gen_block_row == 0) gen_new_block();
-    if (++gen_block_row >= GEN_BLOCK) gen_block_row = 0;
+     * El registro se avanza cada GEN_BLOCK filas. gen_block_row cuenta las
+     * filas ya generadas DENTRO del bloque, asi que la 0 del bloque es la 0. */
+    if (gen_block_row >= GEN_BLOCK) { gen_block_row = 0; gen_new_block(); }
+    gen_block_row++;
 
     /* --- Ancho del cauce: tramo LARGO y recto, escalon de 1 celda ---
      *
@@ -766,7 +803,7 @@ static uint8_t generate_world_row(uint32_t n) {
      * cauce se queda practicamente recto durante casi toda la pantalla y el
      * cambio de ancho es un escalon recto corto, simetrico en los dos bordes.
      *
-     * Por eso: el nivel se mantiene GEN_BLOCK filas (40) y solo cambia +-1
+     * Por eso: el nivel se mantiene GEN_BLOCK filas (32) y solo cambia +-1
      * celda por lado y solo cuando el LFSR lo pide. Antes cambiaba cada 8
      * filas y con mas amplitud: se veia un zigzag/degradado compuesto. */
     if ((n % GEN_BLOCK) == 0) {
@@ -986,15 +1023,22 @@ static void setup_video(void) {
     vc_clear_vram();
     vc_set_scroll_y(0);
     gen_reset();
-    for (row = 0; row < VC_MAP_ROWS; ) {
-        row = (uint8_t)(row + generate_world_row((uint32_t)row));
-    }
 
-    world_row  = VC_MAP_ROWS;
-    scroll_val = 0;
+    /* Rellena la cinta: la fila de mundo n va a la fila de cinta (-n) & 31, asi
+     * que la 31 es la de arriba (negativa) y las 0..30 quedan por delante. */
+    for (row = 0; row < VC_MAP_ROWS; row++) {
+        generate_world_row((uint32_t)row);
+    }
+    world_row = VC_MAP_ROWS - 2;
+
+    /* Camara: muestra SANA el tramo ya pintado y deja UNA fila entera por
+     * delante (la 30 del mundo). Ver advance_scroll(). */
+    scroll_total = (uint32_t)((VC_MAP_ROWS - 1) * 8);
+    scroll_val   = (uint16_t)((0 - scroll_total) & 0xFF);
     scroll_speed = SCROLL_NORM;
     scroll_acc   = 0;
     scroll_step  = 1;
+    vc_set_scroll_y(scroll_val);
 
     plane_place_safe();
 
@@ -1245,7 +1289,15 @@ static void update_bullets(void) {
  * (advance_scroll usa scroll_val directamente), que es la validada.
  */
 static uint8_t plane_on_bank(uint16_t x, uint8_t y) {
-    uint8_t cinta_row = (uint8_t)(((scroll_val + y) >> 3) & (VC_MAP_ROWS - 1));
+    /* La fila de cinta se indexa como la de VIDRIO: cinta = (-n) & 31. La fila
+     * de mundo visible arriba es n = scroll_total >> 3, luego
+     *     cinta = (32 - (scroll_total>>3)) & 31  ==  (-(scroll_total>>3)) & 31
+     * OJO: antes se usaba (scroll_val + y) >> 3, que es el orden CONTRARIO al
+     * que pinta el rio, asi que la colision leia el cauce de otra fila (verde
+     * donde hay agua). El avion moria solo cuando las dos formas no coincidian
+     * y el game over apagaba el HUD en mitad de la partida. */
+    uint32_t fila = (uint32_t)((scroll_total + y) >> 3);
+    uint8_t cinta_row = (uint8_t)((VC_MAP_ROWS - fila) & (VC_MAP_ROWS - 1));
     uint8_t c = (uint8_t)((x + (PLANE_W / 2)) >> 3);
     uint8_t l = river_l[cinta_row];
     uint8_t r = river_r[cinta_row];
@@ -1397,23 +1449,23 @@ static void check_bullet_collisions(void) {
  * cambiar (mismo x, mismas filas de cinta). Se recuerda el resultado. Las
  * colisiones con objetos son cajas AABB y son baratas. */
 static void check_plane_collisions(void) {
-    static uint16_t last_x = 0xFFFF;
-    static uint8_t  last_y = 0xFF;
-    static uint8_t  last_bank;
+    uint8_t last_bank;
 
     if (plane_dead) return;
 
-    /* Avion <-> orilla / isla. Se miran las TRES filas de cinta que ocupa el
-     * sprite (arriba, centro y abajo), no solo la de la esquina superior: con
-     * un sprite de 16 px el borde del canal puede cambiar a mitad del avion. */
-    if (plane_x != last_x || plane_y != last_y) {
-        last_x = plane_x;
-        last_y = plane_y;
-        last_bank = (uint8_t)(plane_on_bank(plane_x, plane_y) ||
-                              plane_on_bank(plane_x, (uint8_t)(plane_y + 8)) ||
-                              plane_on_bank(plane_x,
-                                            (uint8_t)(plane_y + PLANE_H - 1)));
-    }
+    /* AVION <-> ORILLA / ISLA.
+     *
+     * OJO: no se puede cachear el resultado por (x, y) del sprite. La respuesta
+     * depende tambien de la fila de cinta que pasa por debajo, y con filas de
+     * 8 px y 1 px de scroll por frame esa fila cambia en el 12% de los frames:
+     * con cache, el avion moria solo en mitad del cauce. Son 3 consultas a RAM
+     * por frame, coste despreciable. Se miran las TRES filas de cinta que ocupa
+     * el sprite (arriba, centro y abajo); con un sprite de 16 px el borde del
+     * canal puede cambiar a mitad del avion. */
+    last_bank = (uint8_t)(plane_on_bank(plane_x, plane_y) ||
+                          plane_on_bank(plane_x, (uint8_t)(plane_y + 8)) ||
+                          plane_on_bank(plane_x,
+                                        (uint8_t)(plane_y + PLANE_H - 1)));
     if (last_bank) {
         plane_hit();
         return;
@@ -1612,6 +1664,23 @@ static void update_fuel_gauge(void) {
  * del mapa). Coste por frame: 24 celdas, cabe de sobra en el VBLANK.
  * =========================================================================== */
 static void update_water_anim(void) {
+    /* DESACTIVADA (a proposito): repinta agua de filas VISIBLES.
+     *
+     * Medido con capturas antes/despues de la escritura: mientras el juego
+     * repinta la fila nueva, esta animacion puede pasar por la misma fila de
+     * cinta y escribir en celdas a las que aun les falta el tile de la fila
+     * nueva. El resultado son HUECOS: columnas con el tile que habia antes
+     * (panel de GAME OVER, agua suelta) en mitad del cauce, y manchas en el
+     * cesped. Tambien borra la tierra central si la celda no esta en isla_bit.
+     *
+     * El oleaje hay que hacerlo cambiando el PATRON del tile de agua (o con
+     * dos tiles alternando por bloques), nunca repintando celdas que el
+     * jugador esta viendo. */
+    (void)0;
+}
+
+#if 0
+static void update_water_anim_old(void) {
     static uint8_t anim_row, anim_phase, anim_tick;
     uint8_t col;
     uint16_t cell;
@@ -1649,30 +1718,57 @@ static void update_water_anim(void) {
     anim_row = (uint8_t)((anim_row + 1) & 31);
     if (anim_row == 0) anim_phase ^= 1;   /* al dar la vuelta, cambia fase */
 }
+#endif
 
 /* ===========================================================================
  * AVANCE DEL SCROLL + REGENERACION (solo el canal)
+ * ===========================================================================
+ * CUANDO SE REPINTA LA FILA NUEVA (el punto delicado de todo esto):
+ *
+ * En pantalla se ven 30 filas de cinta (40x30) y la cinta tiene 32, asi que
+ * hay exactamente DOS filas fuera de la vista: la de arriba (que entra en
+ * cuanto se mueva el scroll) y la de abajo (que ya salio).
+ *
+ * La fila nueva tiene que pintarse en la cinta que esta POR DEBAJO de la
+ * pantalla: ahi nadie la ve y el jugador solo ve el resultado ya terminado
+ * cuando, 30 filas despues, llega a la vista. Al principio se pintaba demasiado
+ * pronto (con 8 filas de ventaja), o sea SINCRONIZADA con la que se veia: el
+ * cauce nuevo se dibujaba encima del que aun estaba en pantalla y la forma
+ * "se iba componiendo" fila a fila. Y al reves (con la camara 6 filas por
+ * detras de lo generado) el perfil llegaba a pantalla con el scroll ya
+ * encima: las anchuras se deslizaban mal.
+ *
+ * OJO con el ULTIMO PIXEL del paso: la fila que entra por arriba se pinta 1
+ * paso ANTES de quedar totalmente fuera. Si con la fila ya en el borde se
+ * pinta su sustituta, esa sustituta queda a UN paso de la vista y el pixel que
+ * asoma por arriba sale con la forma compuesta. Por eso el nivel que se pinta
+ * es el de la fila que entra en el SIGUIENTE paso de scroll (fila_visible + 2),
+ * que solo puede verse dentro de 30 filas: la sustituta no asoma nunca.
  * =========================================================================== */
 static void advance_scroll(void) {
-    uint8_t was_row = (uint8_t)(scroll_val >> 3);
-
     /* Acumula la velocidad (con fraccion) y avanza los pasos enteros. */
     {
         uint8_t spd = scroll_speed;
         if (spd == 0) spd = SCROLL_NORM;
         scroll_acc = (uint8_t)(scroll_acc + spd);
         scroll_step = (uint8_t)(scroll_acc >> 3);
-        scroll_val = (uint16_t)((scroll_val - scroll_step) & 0xFF);
         scroll_acc = (uint8_t)(scroll_acc & 0x07);
     }
 
+    /* Fila (y px) que se veran en el borde superior DESPUES del paso.
+     * La fila se deriva de un total, no de un contador aparte: asi no puede
+     * desfasarse del scroll. */
     {
-        uint8_t new_row = (uint8_t)(scroll_val >> 3);
-        if (new_row != was_row) {
-            world_row += generate_world_row(world_row);
+        uint32_t fila_nueva = (uint32_t)((scroll_total + scroll_step) >> 3) + 2;
+
+        if (fila_nueva > world_row) {
+            world_row = fila_nueva;
+            generate_world_row(world_row);
         }
     }
 
+    scroll_val = (uint16_t)((scroll_val - scroll_step) & 0xFF);
+    scroll_total += scroll_step;      /* px recorridos, sin envolver   */
     vc_set_scroll_y(scroll_val);
 }
 
@@ -1729,19 +1825,24 @@ static void reset_game(void) {
     /* Re-genera el rio (misma semilla => mismo layout). El rio se repinta
      * entero, asi que no hay que borrar el panel del GAME OVER a mano. */
     rng_state = RIVER_SEED;
-    world_row  = VC_MAP_ROWS;
-    scroll_val = 0;
+
+    /* La camara se fija ANTES de pintar: la fila de mundo n se escribe en la
+     * cinta (32 - n) & 31, asi que si la camara ya esta en su sitio el repintado
+     * cae justo donde debe (si no, se pinta un layout y se ensena otro). */
+    scroll_total = (uint32_t)((VC_MAP_ROWS - 1) * 8);   /* ver setup_video() */
+    scroll_val = (uint16_t)((0 - scroll_total) & 0xFF);
+    vc_set_scroll_y(scroll_val);
+
+    for (row = 0; row < VC_MAP_ROWS; row++) {
+        generate_world_row((uint32_t)row);
+    }
+    world_row  = VC_MAP_ROWS - 2;
     scroll_speed = SCROLL_NORM;
     scroll_acc   = 0;
     scroll_step  = 1;
-    for (row = 0; row < VC_MAP_ROWS; ) {
-        row = (uint8_t)(row + generate_world_row((uint32_t)row));
-    }
 
     /* Ahora que el perfil esta regenerado, colocar el avion en agua libre. */
     plane_place_safe();
-
-    vc_set_scroll_y(scroll_val);
 
     /* hud_setup() reescribe POSICION y patrones: en GAME OVER se apagaron los
      * 32 sprites, asi que hud_draw() solo no basta (no repondria el HUD). */

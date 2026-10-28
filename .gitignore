@@ -8,3 +8,6 @@ symbols.txt
 # capturas de analisis: SI se versionan (son referencia)
 !doc/capturas/**
 !doc/capturas/**/*.png
+
+# capturas de trabajo (no son referencia)
+cap*/
