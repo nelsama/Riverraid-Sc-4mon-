@@ -11,3 +11,5 @@ symbols.txt
 
 # capturas de trabajo (no son referencia)
 cap*/
+__pycache__/
+*.pyc
