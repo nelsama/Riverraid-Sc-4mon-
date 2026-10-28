@@ -38,9 +38,9 @@ PROGRAM = $(OUTPUT_DIR)/$(PROGRAM_NAME).bin
 MAP_FILE = $(OUTPUT_DIR)/$(PROGRAM_NAME).map
 
 # Fuentes del juego
-APP_C   = game.c sound.c joy.c
+APP_C   = game.c joy.c
 APP_ASM = startup.s
-APP_OBJECTS = $(BUILD_DIR)/game.o $(BUILD_DIR)/sound.o $(BUILD_DIR)/joy.o $(BUILD_DIR)/startup.o
+APP_OBJECTS = $(BUILD_DIR)/game.o $(BUILD_DIR)/joy.o $(BUILD_DIR)/startup.o
 
 # PERF=1 anade un medidor de coste de frame (volcado por UART).
 #   make clean && make PERF=1

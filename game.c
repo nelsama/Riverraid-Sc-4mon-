@@ -24,8 +24,9 @@
 
 #include <stdint.h>
 #include "video.h"
+#include "fastvideo.h"    /* primitivas en linea: no enlaza lib/vc.lib      */
 #include "romapi.h"
-#include "sound.h"
+#include "fastsound.h"    /* SID en linea: no enlaza sound.c                */
 #include "joy.h"
 #include "perf.h"
 
@@ -44,11 +45,10 @@
 #define PLANE_MAX_X  ((RIVER_RIGHT + 1) * 8 - 16)   /* avion 16 px de ancho */
 
 /* El BARCO no puede salir del cauce: rebota en las orillas. */
-#define BOAT_X_MIN   (RIVER_LEFT * 8)
-#define BOAT_X_MAX   ((RIVER_RIGHT + 1) * 8 - 16)
-/* El HELICOPTERO vuela: puede ir de un borde al otro de la PANTALLA. */
-#define HELI_X_MIN   0
-#define HELI_X_MAX   (VC_SCREEN_W - 16)
+/* Limites del barco: ya NO son fijos. update_boat() los recalcula cada frame
+ * con el perfil del cauce de su fila (river_l/r y la isla central). */
+/* El HELICOPTERO tambien se mueve por el CAUCE: en el arcade vuela sobre el
+ * agua, nunca sobre el cesped. Sus limites salen del mismo perfil. */
 #define PLANE_MIN_Y  24     /* el HUD ocupa Y=10..17 (ver HUD_Y) */
 #define PLANE_MAX_Y  (VC_SCREEN_H - 16 - 8)   /* margen inferior (overscan)     */
 
@@ -109,7 +109,14 @@ static uint8_t  scroll_step;
  * Rango de patrones: 42..51, por debajo de 64 y sin tocar 0..2 (los pisa la
  * fase 3 del init) ni 12..15 (objetos del juego). */
 #define HUD_SCALE      0
-#define SPR_HUD_BASE   10      /* slots 10..15 para el HUD           */
+/* Slots de OAM. Solo hay 32 y el HUD ocupa 14 (4 puntos + 8 barra + icono y
+ * numero de vidas). El resto: 0 avion, 5 explosion, 6 heli, 8 barco, 30-31
+ * balas. MOVIMIENTO: si el HUD se lleva 14 slots no queda margen para enemigos
+ * extra; para ampliar el juego hay que soltar algun sprite o pasar el HUD a
+ * tiles con split de raster. */
+#define SPR_HUD_BASE   10      /* puntos: 10..13                     */
+#define SPR_HUD_FUEL   14      /* barra: 14..21                      */
+#define SPR_HUD_LIVES  22      /* icono de vida (22) y numero (23)   */
 /* Y=10: la fila 1 del tilemap (pixeles 8..15). La fila 0 (0..7) la recorta
  * el overscan de muchos monitores (manual del core, 1.9 y 5): con Y=2 el HUD
  * quedaba medio fuera de pantalla. Aqui sobra 2 px de margen por arriba. */
@@ -548,7 +555,7 @@ static void read_input(void) {
 
 /* Dibuja el HUD completo en sprites.
  *
- * Rendimiento: vc_sprite_move() cuesta ~14,6 us medida con el RTC (3 escrituras
+ * Rendimiento: fv_sprite_move() cuesta ~14,6 us medida con el RTC (3 escrituras
  * de OAM mas estacado y calculo del bit 8 de X). Con 16 sprites de HUD eran
  * ~230 us por frame, o sea un 16 % del VBLANK. Por eso solo se reescribe lo que
  * ha CAMBIADO: la posicion se fija una vez (hud_setup) y aqui solo se escribe
@@ -563,17 +570,17 @@ static uint8_t  hud_last_lives = 0xFF;
 static void hud_setup(void) {
     uint8_t i;
     for (i = 0; i < 4; i++)
-        vc_sprite_move((uint8_t)(SPR_HUD_BASE + i), (uint16_t)(HUD_SCORE_X + i * 8),
+        fv_sprite_move((uint8_t)(SPR_HUD_BASE + i), (uint16_t)(HUD_SCORE_X + i * 8),
                        HUD_Y, VC_SPPAL_1 | HUD_SCALE);
     for (i = 0; i < HUD_FUEL_W; i++)
-        vc_sprite_move((uint8_t)(SPR_HUD_BASE + 4 + i),
+        fv_sprite_move((uint8_t)(SPR_HUD_FUEL + i),
                        (uint16_t)(HUD_FUEL_X + i * HUD_FUEL_STEP),
                        HUD_Y, VC_SPPAL_1 | HUD_SCALE);
     for (i = 0; i < 8; i++) hud_last_slot_on[i] = 0;
-    vc_sprite_move((uint8_t)(SPR_HUD_BASE + 4 + HUD_FUEL_W), HUD_LIVES_X, HUD_Y,
+    fv_sprite_move((uint8_t)(SPR_HUD_LIVES), HUD_LIVES_X, HUD_Y,
                    VC_SPPAL_1 | HUD_SCALE);
-    vc_sprite_move((uint8_t)(SPR_HUD_BASE + 5 + HUD_FUEL_W),
-                   (uint16_t)(HUD_LIVES_X + 16), HUD_Y, VC_SPPAL_1 | HUD_SCALE);
+    fv_sprite_move((uint8_t)(SPR_HUD_LIVES + 1),
+                   (uint16_t)(HUD_LIVES_X + 8), HUD_Y, VC_SPPAL_1 | HUD_SCALE);
     hud_last_digit[0] = hud_last_digit[1] = hud_last_digit[2] = hud_last_digit[3] = 0xFF;
     hud_last_filled = 0xFF;
     hud_last_lives = 0xFF;
@@ -593,7 +600,7 @@ static void hud_draw(void) {
         d = (uint8_t)((v / div) % 10u);
         if (d != hud_last_digit[i]) {
             hud_last_digit[i] = d;
-            vc_oam_put((uint8_t)(SPR_HUD_BASE + i), VC_OAM_TILE,
+            fv_oam((uint8_t)(SPR_HUD_BASE + i), VC_OAM_TILE,
                        (uint8_t)(HUD_PAT_DIGIT0 + d));
         }
     }
@@ -616,7 +623,7 @@ static void hud_draw(void) {
 
             if (on != hud_last_slot_on[i]) {
                 hud_last_slot_on[i] = on;
-                vc_oam_put((uint8_t)(SPR_HUD_BASE + 4 + i), VC_OAM_TILE,
+                fv_oam((uint8_t)(SPR_HUD_FUEL + i), VC_OAM_TILE,
                            (uint8_t)(on ? HUD_PAT_BAR_ON : HUD_PAT_BAR_OFF));
             }
         }
@@ -626,8 +633,8 @@ static void hud_draw(void) {
     /* Icono de vida + numero de vidas. */
     if (lives != hud_last_lives) {
         if (hud_last_lives == 0xFF)
-            vc_oam_put((uint8_t)(SPR_HUD_BASE + 4 + HUD_FUEL_W), VC_OAM_TILE, HUD_PAT_LIVES);
-        vc_oam_put((uint8_t)(SPR_HUD_BASE + 5 + HUD_FUEL_W), VC_OAM_TILE,
+            fv_oam(SPR_HUD_LIVES, VC_OAM_TILE, HUD_PAT_LIVES);
+        fv_oam((uint8_t)(SPR_HUD_LIVES + 1), VC_OAM_TILE,
                    (uint8_t)(HUD_PAT_DIGIT0 + (lives % 10)));
         hud_last_lives = lives;
     }
@@ -1068,7 +1075,7 @@ static uint8_t generate_world_row(uint32_t n) {
     /* --- Pinta la fila en UNA sola pasada, con tile y atributo siempre ---
      *
      * Escritura DIRECTA al puerto del core ($D800/$D801/$D802) en vez de
-     * vc_put_cell()/vc_put_attr(): esas funciones suman una llamada, un
+     * fv_put_cell()/fv_put_attr(): esas funciones suman una llamada, un
      * calculo de fila*64+col y DOS escrituras por celda, y medido con el RTC
      * son ~15 us por celda (64 celdas = casi 1 ms de los 1,43 ms del VBLANK).
      * Aqui la direccion se avanza con INC en vez de recalcularla, o sea ~7 us
@@ -1142,6 +1149,52 @@ static uint8_t generate_world_row(uint32_t n) {
 /* ===========================================================================
  * SETUP DE VIDEO
  * =========================================================================== */
+static void draw_plane(void);
+/* Patrones de fondo y de sprite.
+ *
+ * vid_clear_vram() expansión de la fuente: borra TODOS los patrones, asi que
+ * esto hay que llamarlo despues de cada limpieza (arranque y reinicio con FIRE,
+ * porque la partida puede reiniciarse encima del programa sin resetear el core). */
+static void load_patterns(void) {
+    fv_load_bg_pattern(TILE_GRASS,  tile_grass_p0,  tile_grass_p1);
+    fv_load_bg_pattern(TILE_WATER,  tile_water_p0,  tile_water_p1);
+    fv_load_bg_pattern(TILE_WATER2, tile_water2_p0, tile_water2_p1);
+    fv_load_bg_pattern(TILE_ISLAND,    tile_island_tl_p0, tile_island_tl_p1);
+    fv_load_bg_pattern(TILE_ISLAND_R,  tile_island_tr_p0, tile_island_tr_p1);
+    fv_load_bg_pattern(TILE_ISLAND_L2, tile_island_bl_p0, tile_island_bl_p1);
+    fv_load_bg_pattern(TILE_ISLAND_R2, tile_island_br_p0, tile_island_br_p1);
+
+    /* Transicion tierra->agua: arena y agua. */
+    fv_load_bg_pattern(TILE_EDGE_L0, tile_edge_l0_p0, tile_edge_l0_p1);
+    fv_load_bg_pattern(TILE_EDGE_L1, tile_edge_l1_p0, tile_edge_l1_p1);
+    fv_load_bg_pattern(TILE_EDGE_R0, tile_edge_r0_p0, tile_edge_r0_p1);
+    fv_load_bg_pattern(TILE_EDGE_R1, tile_edge_r1_p0, tile_edge_r1_p1);
+    fv_load_bg_pattern(TILE_TREE,    tile_tree_p0,    tile_tree_p1);
+    fv_load_bg_pattern(TILE_BRIDGE,  tile_bridge_p0,  tile_bridge_p1);
+    /* Fondo opaco del panel de GAME OVER (TILE_PANEL usa el indice 1). */
+    fv_load_bg_pattern(TILE_PANEL,   tile_panel_p0,   tile_panel_p1);
+
+    fv_load_spr_pattern(SPR_PLANE_PAT, spr_plane_p0, spr_plane_p1);
+    fv_load_spr_pattern(SPR_BOAT_PAT,  spr_boat_p0,  spr_boat_p1);
+    fv_load_spr_pattern(SPR_HELI_PAT,  spr_heli_p0,  spr_heli_p1);
+    fv_load_spr_pattern(SPR_BULLET_PAT, spr_bullet_p0, spr_bullet_p1);
+    fv_load_spr_pattern(SPR_FUEL_PAT,   spr_fuel_p0,   spr_fuel_p1);
+    fv_load_spr_pattern(SPR_BOOM_PAT,      spr_boom_p0,  spr_boom_p0);
+    fv_load_spr_pattern((uint8_t)(SPR_BOOM_PAT + 1), spr_boom2_p0, spr_boom2_p0);
+
+    /* Patrones del HUD (digitos, icono de vida y celdas de la barra).
+     * Sin escala: un patron por pieza, todos por debajo de 64. */
+    {
+        uint8_t d;
+        for (d = 0; d < 10; d++)
+            fv_load_spr_pattern((uint8_t)(HUD_PAT_DIGIT0 + d), hud_digit[d], hud_digit[d]);
+        fv_load_spr_pattern(HUD_PAT_LIVES, hud_lives_pat, hud_lives_pat);
+        fv_load_spr_pattern(HUD_PAT_BAR_ON, hud_bar_on, hud_bar_on);
+        fv_load_spr_pattern(HUD_PAT_BAR_OFF, hud_bar_off, hud_bar_off);
+    }
+
+}
+
 static void setup_video(void) {
     uint8_t row;
 
@@ -1149,99 +1202,64 @@ static void setup_video(void) {
      * joy_read() lee basura y las direcciones no responden. */
     joy_init();
 
-    vc_wait_ready();
-    vc_wait_setup();     /* que el setup del core haya terminado de verdad */
-    vc_clear_oam();      /* el OAM NO lo limpia vc_clear_vram(): en hardware
+    vid_wait_ready();
+    vid_wait_setup();    /* que el setup del core haya terminado de verdad */
+    fv_clear_oam();      /* el OAM NO lo limpia vid_clear_vram(): en hardware
                           * trae basura y el campo TILE daba '7'/'8' ASCII */
-    vc_wait_vblank();
-    vc_clear_vram();
+    vid_wait_vblank();
+    vid_clear_vram();
 
-    vc_set_bgcolor(VC_RGB444(0x2, 0x6, 0xF));
+    vid_set_bgcolor(VC_RGB444(0x2, 0x6, 0xF));
 
     /* Paleta 0 (PAL_MENU): solo la usa el panel de GAME OVER.
      * 1 = NEGRO (fondo opaco del panel), 3 = BLANCO (texto de la fuente). */
-    vc_pal_set_bg(PAL_MENU, 1, VC_RGB444(0x0, 0x0, 0x0));
-    vc_pal_set_bg(PAL_MENU, 2, VC_RGB444(0xF, 0xF, 0xF));
-    vc_pal_set_bg(PAL_MENU, 3, VC_RGB444(0xF, 0xF, 0xF));
+    vid_pal_set_bg(PAL_MENU, 1, VC_RGB444(0x0, 0x0, 0x0));
+    vid_pal_set_bg(PAL_MENU, 2, VC_RGB444(0xF, 0xF, 0xF));
+    vid_pal_set_bg(PAL_MENU, 3, VC_RGB444(0xF, 0xF, 0xF));
 
     /* Paleta 1: agua. 1 = azul, 2 = oleaje, 3 = azul claro. */
-    vc_pal_set_bg(PAL_WATER, 1, VC_RGB444(0x0, 0x2, 0xA));
-    vc_pal_set_bg(PAL_WATER, 2, VC_RGB444(0x1, 0x4, 0xE));   /* oleaje */
-    vc_pal_set_bg(PAL_WATER, 3, VC_RGB444(0x2, 0x6, 0xF));
+    vid_pal_set_bg(PAL_WATER, 1, VC_RGB444(0x0, 0x2, 0xA));
+    vid_pal_set_bg(PAL_WATER, 2, VC_RGB444(0x1, 0x4, 0xE));   /* oleaje */
+    vid_pal_set_bg(PAL_WATER, 3, VC_RGB444(0x2, 0x6, 0xF));
 
     /* Paleta 2 (ISLA y tierra): 1 = arena, 2 = vegetacion, 3 = agua. El 3 debe
      * ser el MISMO azul del cauce para que la isla no tenga borde negro. */
-    vc_pal_set_bg(PAL_ISLAND, 1, VC_RGB444(0xD, 0x8, 0x3));
-    vc_pal_set_bg(PAL_ISLAND, 2, VC_RGB444(0x0, 0x7, 0x0));
-    vc_pal_set_bg(PAL_ISLAND, 3, VC_RGB444(0x2, 0x6, 0xF));
+    vid_pal_set_bg(PAL_ISLAND, 1, VC_RGB444(0xD, 0x8, 0x3));
+    vid_pal_set_bg(PAL_ISLAND, 2, VC_RGB444(0x0, 0x7, 0x0));
+    vid_pal_set_bg(PAL_ISLAND, 3, VC_RGB444(0x2, 0x6, 0xF));
 
     /* Paleta 3 (cesped y orillas): 1 = verde claro (continuidad con el cesped),
      * 2 = arena, 3 = verde oscuro. El agua de la orilla es transparente
      * (indice 0) y deja ver el BG_COLOR, que es el mismo azul del rio. */
-    vc_pal_set_bg(PAL_EDGE, 1, VC_RGB444(0x0, 0xA, 0x0));
-    vc_pal_set_bg(PAL_EDGE, 2, VC_RGB444(0xD, 0x8, 0x3));
-    vc_pal_set_bg(PAL_EDGE, 3, VC_RGB444(0x0, 0x6, 0x0));
+    vid_pal_set_bg(PAL_EDGE, 1, VC_RGB444(0x0, 0xA, 0x0));
+    vid_pal_set_bg(PAL_EDGE, 2, VC_RGB444(0xD, 0x8, 0x3));
+    vid_pal_set_bg(PAL_EDGE, 3, VC_RGB444(0x0, 0x6, 0x0));
 
     /* La franja de arena usa la misma paleta (indice 1 = arena). */
     /* Avion: amarillo vivo (3) y amarillo oscuro (1). */
-    vc_pal_set_spr(SPR_PLANE_PAL, 1, VC_RGB444(0x0, 0xF, 0xF));  /* cian */
-    vc_pal_set_spr(SPR_PLANE_PAL, 2, VC_RGB444(0x2, 0xA, 0xE));  /* azul */
+    vid_pal_set_spr(SPR_PLANE_PAL, 1, VC_RGB444(0x0, 0xF, 0xF));  /* cian */
+    vid_pal_set_spr(SPR_PLANE_PAL, 2, VC_RGB444(0x2, 0xA, 0xE));  /* azul */
 
     /* Barco: casco azul (1), cubierta roja (2), gris claro (3). */
-    vc_pal_set_spr(SPR_BOAT_PAL,  1, VC_RGB444(0x0, 0x0, 0x0));  /* negro */
-    vc_pal_set_spr(SPR_BOAT_PAL,  2, VC_RGB444(0x0, 0x0, 0xF));  /* azul  */
-    vc_pal_set_spr(SPR_BOAT_PAL,  3, VC_RGB444(0xB, 0x0, 0x1));  /* rojo  */
+    vid_pal_set_spr(SPR_BOAT_PAL,  1, VC_RGB444(0x0, 0x0, 0x0));  /* negro */
+    vid_pal_set_spr(SPR_BOAT_PAL,  2, VC_RGB444(0x0, 0x0, 0xF));  /* azul  */
+    vid_pal_set_spr(SPR_BOAT_PAL,  3, VC_RGB444(0xB, 0x0, 0x1));  /* rojo  */
 
     /* Helicoptero: cuerpo azul (1), rotor beige (2), azul claro (3). */
-    vc_pal_set_spr(SPR_HELI_PAL,  1, VC_RGB444(0x2, 0xF, 0xF));  /* cian  */
-    vc_pal_set_spr(SPR_HELI_PAL,  2, VC_RGB444(0x0, 0x0, 0x0));  /* negro */
-    vc_pal_set_spr(SPR_HELI_PAL,  3, VC_RGB444(0xB, 0x1, 0x0));  /* rojo  */
+    vid_pal_set_spr(SPR_HELI_PAL,  1, VC_RGB444(0x2, 0xF, 0xF));  /* cian  */
+    vid_pal_set_spr(SPR_HELI_PAL,  2, VC_RGB444(0x0, 0x0, 0x0));  /* negro */
+    vid_pal_set_spr(SPR_HELI_PAL,  3, VC_RGB444(0xB, 0x1, 0x0));  /* rojo  */
 
-    vc_pal_set_spr(SPR_FUEL_PAL,  3, VC_RGB444(0xD, 0x1, 0x1));  /* rojo  */
-    vc_pal_set_spr(SPR_FUEL_PAL,  1, VC_RGB444(0xF, 0xE, 0xE));  /* blanco (F/asa) */
+    vid_pal_set_spr(SPR_FUEL_PAL,  3, VC_RGB444(0xD, 0x1, 0x1));  /* rojo  */
+    vid_pal_set_spr(SPR_FUEL_PAL,  1, VC_RGB444(0xF, 0xE, 0xE));  /* blanco (F/asa) */
 
-    vc_load_bg_pattern(TILE_GRASS,  tile_grass_p0,  tile_grass_p1);
-    vc_load_bg_pattern(TILE_WATER,  tile_water_p0,  tile_water_p1);
-    vc_load_bg_pattern(TILE_WATER2, tile_water2_p0, tile_water2_p1);
-    vc_load_bg_pattern(TILE_ISLAND,    tile_island_tl_p0, tile_island_tl_p1);
-    vc_load_bg_pattern(TILE_ISLAND_R,  tile_island_tr_p0, tile_island_tr_p1);
-    vc_load_bg_pattern(TILE_ISLAND_L2, tile_island_bl_p0, tile_island_bl_p1);
-    vc_load_bg_pattern(TILE_ISLAND_R2, tile_island_br_p0, tile_island_br_p1);
-
-    /* Transicion tierra->agua: arena y agua. */
-    vc_load_bg_pattern(TILE_EDGE_L0, tile_edge_l0_p0, tile_edge_l0_p1);
-    vc_load_bg_pattern(TILE_EDGE_L1, tile_edge_l1_p0, tile_edge_l1_p1);
-    vc_load_bg_pattern(TILE_EDGE_R0, tile_edge_r0_p0, tile_edge_r0_p1);
-    vc_load_bg_pattern(TILE_EDGE_R1, tile_edge_r1_p0, tile_edge_r1_p1);
-    vc_load_bg_pattern(TILE_TREE,    tile_tree_p0,    tile_tree_p1);
-    vc_load_bg_pattern(TILE_BRIDGE,  tile_bridge_p0,  tile_bridge_p1);
-    /* Fondo opaco del panel de GAME OVER (TILE_PANEL usa el indice 1). */
-    vc_load_bg_pattern(TILE_PANEL,   tile_panel_p0,   tile_panel_p1);
-
-    vc_load_spr_pattern(SPR_PLANE_PAT, spr_plane_p0, spr_plane_p1);
-    vc_load_spr_pattern(SPR_BOAT_PAT,  spr_boat_p0,  spr_boat_p1);
-    vc_load_spr_pattern(SPR_HELI_PAT,  spr_heli_p0,  spr_heli_p1);
-    vc_load_spr_pattern(SPR_BULLET_PAT, spr_bullet_p0, spr_bullet_p1);
-    vc_load_spr_pattern(SPR_FUEL_PAT,   spr_fuel_p0,   spr_fuel_p1);
-    vc_load_spr_pattern(SPR_BOOM_PAT,      spr_boom_p0,  spr_boom_p0);
-    vc_load_spr_pattern((uint8_t)(SPR_BOOM_PAT + 1), spr_boom2_p0, spr_boom2_p0);
-
-    /* Patrones del HUD (digitos, icono de vida y celdas de la barra).
-     * Sin escala: un patron por pieza, todos por debajo de 64. */
-    {
-        uint8_t d;
-        for (d = 0; d < 10; d++)
-            vc_load_spr_pattern((uint8_t)(HUD_PAT_DIGIT0 + d), hud_digit[d], hud_digit[d]);
-        vc_load_spr_pattern(HUD_PAT_LIVES, hud_lives_pat, hud_lives_pat);
-        vc_load_spr_pattern(HUD_PAT_BAR_ON, hud_bar_on, hud_bar_on);
-        vc_load_spr_pattern(HUD_PAT_BAR_OFF, hud_bar_off, hud_bar_off);
-    }
+    load_patterns();
 
     /* SIN bandas de raster: todo el fondo usa el scroll global. El HUD va en
      * sprites, asi que no necesita banda fija. */
-    vc_set_raster(0xFF, 0xFF);
-    vc_set_band2_scroll(0, 0);
-    vc_set_band3_scroll(0, 0);
+    vid_set_raster(0xFF, 0xFF);
+    vid_set_band2_scroll(0, 0);
+    vid_set_band3_scroll(0, 0);
 
     /* Semilla del rio. */
     rng_state = RIVER_SEED;
@@ -1249,8 +1267,8 @@ static void setup_video(void) {
     /* Reinicia el generador del LFSR al estado del puente 1. El core de video
      * puede traer basura de una ejecucion anterior: se limpia la VRAM antes de
      * pintar para que TODAS las celdas queden escritas por este generador. */
-    vc_clear_vram();
-    vc_set_scroll_y(0);
+    vid_clear_vram();
+    vid_set_scroll_y(0);
     gen_reset();
 
     /* Rellena la cinta: la fila de mundo n va a la fila de cinta (-n) & 31, asi
@@ -1267,7 +1285,7 @@ static void setup_video(void) {
     scroll_speed = SCROLL_NORM;
     scroll_acc   = 0;
     scroll_step  = 1;
-    vc_set_scroll_y(scroll_val);
+    vid_set_scroll_y(scroll_val);
 
     plane_place_safe();
 
@@ -1297,6 +1315,13 @@ static void setup_video(void) {
 
     hud_setup();
     hud_draw();
+
+    /* El avion se pinta YA: la cache de draw_plane() cree que el OAM sigue
+     * escrito, pero vid_clear_vram() lo acaba de borrar. Sin esto el avion no
+     * aparece hasta que cambie de posicion (y el jugador se queda sin saber
+     * donde esta). */
+    oam_cache_invalida = 1;
+    draw_plane();
 }
 
 /* ===========================================================================
@@ -1307,7 +1332,7 @@ static void draw_plane(void) {
      * los 5 campos del sprite cuesta ~7 us cada uno y el avion se mueve poco.
      *
      * OJO: la cache NO puede sobrevivir a un reinicio de partida. Tras
-     * vc_clear_oam() el OAM tiene el patron a 0 y esta cache creeria que ya
+     * fv_clear_oam() el OAM tiene el patron a 0 y esta cache creeria que ya
      * esta escrito (en hardware se veia el avion como un '7'). */
     static uint16_t last_x = 0xFFFF;
     static uint8_t  last_y = 0xFF;
@@ -1324,7 +1349,7 @@ static void draw_plane(void) {
 
     if (!visible) {
         if (last_flags != 0xFE) {
-            vc_sprite_disable(SPR_PLANE);
+            fv_sprite_disable(SPR_PLANE);
             last_flags = 0xFE;
         }
         return;
@@ -1332,18 +1357,18 @@ static void draw_plane(void) {
 
     if (last_flags != flags) {
         /* Primera vez (o vuelve de invisible): coloca todo. */
-        vc_sprite_move(SPR_PLANE, plane_x, plane_y, flags);
-        vc_oam_put(SPR_PLANE, VC_OAM_TILE, SPR_PLANE_PAT);
+        fv_sprite_move(SPR_PLANE, plane_x, plane_y, flags);
+        fv_oam_tile(SPR_PLANE, SPR_PLANE_PAT);
         last_x = plane_x; last_y = plane_y; last_flags = flags;
     } else if (plane_x != last_x || plane_y != last_y) {
-        vc_sprite_move(SPR_PLANE, plane_x, plane_y, flags);
+        fv_sprite_move(SPR_PLANE, plane_x, plane_y, flags);
         last_x = plane_x; last_y = plane_y;
     }
 }
 
 static void draw_boat(void) {
-    /* Igual que el avion: solo se escribe el OAM si cambia. vc_sprite_move y
-     * vc_oam_put cuestan ~7-15 us cada uno. */
+    /* Igual que el avion: solo se escribe el OAM si cambia. fv_sprite_move y
+     * fv_oam cuestan ~7-15 us cada uno. */
     static uint8_t last_on = 0xFF;   /* 0 = oculto, 1 = barco, 2 = heli */
     static uint8_t last_x;
     static uint8_t last_y;
@@ -1362,8 +1387,8 @@ static void draw_boat(void) {
         return;
 
     if (mode == 0) {
-        vc_sprite_disable(SPR_BOAT);
-        vc_sprite_disable(SPR_HELI);
+        fv_sprite_disable(SPR_BOAT);
+        fv_sprite_disable(SPR_HELI);
         last_on = 0;
         return;
     }
@@ -1371,22 +1396,28 @@ static void draw_boat(void) {
     if (mode != last_on) {
         /* Cambio de tipo: oculta el que sobra y prepara el patron. */
         if (mode == 2) {
-            vc_sprite_disable(SPR_BOAT);
-            vc_sprite_move(SPR_HELI, boat_x, boat_y,
+            fv_sprite_disable(SPR_BOAT);
+            fv_sprite_move(SPR_HELI, boat_x, boat_y,
                            (uint8_t)(SPR_HELI_PAL | VC_SPR_SCALE2X | flip));
-            vc_oam_put(SPR_HELI, VC_OAM_TILE, SPR_HELI_PAT);
+            fv_oam(SPR_HELI, VC_OAM_TILE, SPR_HELI_PAT);
         } else {
-            vc_sprite_disable(SPR_HELI);
-            vc_sprite_move(SPR_BOAT, boat_x, boat_y,
+            fv_sprite_disable(SPR_HELI);
+            fv_sprite_move(SPR_BOAT, boat_x, boat_y,
                            (uint8_t)(SPR_BOAT_PAL | VC_SPR_SCALE2X | flip));
-            vc_oam_put(SPR_BOAT, VC_OAM_TILE, SPR_BOAT_PAT);
+            fv_oam(SPR_BOAT, VC_OAM_TILE, SPR_BOAT_PAT);
         }
     } else if (mode == 2) {
-        vc_sprite_move(SPR_HELI, boat_x, boat_y,
+        fv_sprite_move(SPR_HELI, boat_x, boat_y,
                        (uint8_t)(SPR_HELI_PAL | VC_SPR_SCALE2X | flip));
+        /* El FLIP va en las FLAGS: si solo cambia el sentido de marcha (misma
+         * posicion), sin esto el enemigo se quedaba mirando al lado contrario. */
+        fv_oam(SPR_HELI, VC_OAM_FLAGS,
+               (uint8_t)(SPR_HELI_PAL | VC_SPR_SCALE2X | flip));
     } else {
-        vc_sprite_move(SPR_BOAT, boat_x, boat_y,
+        fv_sprite_move(SPR_BOAT, boat_x, boat_y,
                        (uint8_t)(SPR_BOAT_PAL | VC_SPR_SCALE2X | flip));
+        fv_oam(SPR_BOAT, VC_OAM_FLAGS,
+               (uint8_t)(SPR_BOAT_PAL | VC_SPR_SCALE2X | flip));
     }
     last_on = mode;
     last_x = boat_x;
@@ -1396,21 +1427,21 @@ static void draw_boat(void) {
 
 static void draw_fuel(void) {
     if (!fuel_active) {
-        vc_sprite_disable(SPR_FUEL);
+        fv_sprite_disable(SPR_FUEL);
         return;
     }
-    vc_sprite_move(SPR_FUEL, fuel_x, fuel_y, SPR_FUEL_PAL | VC_SPR_SCALE2X);
-    vc_oam_put(SPR_FUEL, VC_OAM_TILE, SPR_FUEL_PAT);
+    fv_sprite_move(SPR_FUEL, fuel_x, fuel_y, SPR_FUEL_PAL | VC_SPR_SCALE2X);
+    fv_oam(SPR_FUEL, VC_OAM_TILE, SPR_FUEL_PAT);
 }
 
 /* Explosion: parpadea entre sus 2 frames mientras dura. */
 static void draw_boom(void) {
     if (!boom_active) {
-        vc_sprite_disable(SPR_BOOM);
+        fv_sprite_disable(SPR_BOOM);
         return;
     }
-    vc_sprite_move(SPR_BOOM, boom_x, boom_y, SPR_BOOM_PAL | VC_SPR_SCALE2X);
-    vc_oam_put(SPR_BOOM, VC_OAM_TILE,
+    fv_sprite_move(SPR_BOOM, boom_x, boom_y, SPR_BOOM_PAL | VC_SPR_SCALE2X);
+    fv_oam(SPR_BOOM, VC_OAM_TILE,
                (uint8_t)(SPR_BOOM_PAT + ((boom_frames >> 1) & 1)));
 }
 
@@ -1452,22 +1483,22 @@ static uint8_t fire_bullet(void) {
 static void draw_bullets(void) {
     uint8_t i;
     /* Solo se toca el OAM si la bala aparece/desaparece: mover una bala ya
-     * activa solo cuesta un vc_sprite_move. */
+     * activa solo cuesta un fv_sprite_move. */
     static uint8_t last_alive[NBULLETS] = { 0xFF, 0xFF };
 
     for (i = 0; i < NBULLETS; i++) {
         if (bullet_alive[i]) {
             if (!last_alive[i]) {
-                vc_sprite_move((uint8_t)(SPR_BULLET + i), bullet_x[i], bullet_y[i],
+                fv_sprite_move((uint8_t)(SPR_BULLET + i), bullet_x[i], bullet_y[i],
                                SPR_BULLET_PAL);
-                vc_oam_put((uint8_t)(SPR_BULLET + i), VC_OAM_TILE, SPR_BULLET_PAT);
+                fv_oam((uint8_t)(SPR_BULLET + i), VC_OAM_TILE, SPR_BULLET_PAT);
             } else {
-                vc_sprite_move((uint8_t)(SPR_BULLET + i), bullet_x[i], bullet_y[i],
+                fv_sprite_move((uint8_t)(SPR_BULLET + i), bullet_x[i], bullet_y[i],
                                SPR_BULLET_PAL);
             }
             last_alive[i] = 1;
         } else if (last_alive[i] != 0) {
-            vc_sprite_disable((uint8_t)(SPR_BULLET + i));
+            fv_sprite_disable((uint8_t)(SPR_BULLET + i));
             last_alive[i] = 0;
         }
     }
@@ -1517,6 +1548,30 @@ static void update_bullets(void) {
  * Para no depender del signo se usa la MISMA expresion que al dibujar
  * (advance_scroll usa scroll_val directamente), que es la validada.
  */
+/**
+ * FILA DE CINTA que se ve en la coordenada y de la pantalla.
+ *
+ * El scroll de este juego DECRECE (scroll_val baja para que el terreno baje):
+ *     fila_mundo = scroll_total >> 3   (la que esta arriba)
+ *     cinta      = (32 - fila_mundo) & 31
+ * Es la MISMA formula que usa generate_world_row() al pintar. Con
+ * (scroll_val + y) >> 3 se lee el orden INVERSO y la colision mira el cauce de
+ * otra fila (verde donde hay agua). */
+#define FILA_CINTA(y)  ((uint8_t)((VC_MAP_ROWS - (uint8_t)((scroll_total + (y)) >> 3)) \
+                                  & (VC_MAP_ROWS - 1)))
+
+static uint8_t celda_en_tierra(uint8_t cinta_row, uint8_t c) {
+    uint8_t l  = river_l[cinta_row];
+    uint8_t r  = river_r[cinta_row];
+    uint8_t il = island_l[cinta_row];
+    uint8_t ir = island_r[cinta_row];
+
+    /* Los bordes son tiles de ARENA, no agua: el agua va de l+1 a r-1. */
+    if (c <= l || c >= r) return 1;
+    if (il != 0xFF && c >= il && c <= ir) return 1;
+    return 0;
+}
+
 static uint8_t plane_on_bank(uint16_t x, uint8_t y) {
     /* La fila de cinta se indexa como la de VIDRIO: cinta = (-n) & 31. La fila
      * de mundo visible arriba es n = scroll_total >> 3, luego
@@ -1525,17 +1580,16 @@ static uint8_t plane_on_bank(uint16_t x, uint8_t y) {
      * que pinta el rio, asi que la colision leia el cauce de otra fila (verde
      * donde hay agua). El avion moria solo cuando las dos formas no coincidian
      * y el game over apagaba el HUD en mitad de la partida. */
-    uint32_t fila = (uint32_t)((scroll_total + y) >> 3);
-    uint8_t cinta_row = (uint8_t)((VC_MAP_ROWS - fila) & (VC_MAP_ROWS - 1));
-    uint8_t c = (uint8_t)((x + (PLANE_W / 2)) >> 3);
-    uint8_t l = river_l[cinta_row];
-    uint8_t r = river_r[cinta_row];
-    uint8_t il = island_l[cinta_row];
-    uint8_t ir = island_r[cinta_row];
+    uint8_t cinta_row = FILA_CINTA(y);
 
-    /* Los bordes son tiles de ARENA, no agua: el agua va de l+1 a r-1. */
-    if (c <= l || c >= r) return 1;
-    if (il != 0xFF && c >= il && c <= ir) return 1;
+    /* Las DOS orillas del sprite (16 px) en la MISMA fila de cinta: antes solo
+     * se miraba el centro, asi que medio avion podia quedar sobre el cesped
+     * sin que contara. OJO: el borde derecho NO se evalua en su propia fila
+     * (plane_y + PLANE_H - 1); con 1 px de scroll por frame eso leia la orilla
+     * de la fila siguiente, o sea una linea diagonal que el jugador veia como
+     * una "V" de collision imposible. */
+    if (celda_en_tierra(cinta_row, (uint8_t)(x >> 3))) return 1;
+    if (celda_en_tierra(cinta_row, (uint8_t)((x + PLANE_W - 1) >> 3))) return 1;
     return 0;
 }
 
@@ -1563,6 +1617,7 @@ static void plane_hit(void) {
 
     /* El avion vuelve YA al punto de partida y el rio se para hasta que se
      * pulse FIRE: no sigue andando mientras se pierde una vida. */
+    gen_restore_checkpoint();
     plane_place_safe();
     esperando_fire = 1;
     snd_engine_off();
@@ -1602,57 +1657,6 @@ static void plane_place_safe(void) {
     if (plane_x > PLANE_MAX_X) plane_x = PLANE_MAX_X;
 }
 
-/* Tras un choque el avion NO sigue donde estaba: vuelve al punto de partida
- * (centro del cauce, altura fija) y el scroll regresa a su velocidad normal. */
-static void plane_respawn(void) {
-    uint8_t r;
-
-    plane_dead = 0;
-    plane_dead_frames = 0;
-
-    if (lives == 0) {
-        game_over = 1;
-        snd_engine_off();
-        snd_gameover();
-        return;
-    }
-
-    /* CHECKPOINT: se vuelve al puente cruzado (documento de puentes). El
-     * tramo se regenera con la MISMA forma y se reinicia el scroll, de modo
-     * que "cada puente marca un nivel" de verdad: morir hace repetir el tramo.
-     *
-     * Se regenera la cinta entera porque el rio entero avanza varios tramos:
-     * basta con repintar las 32 filas desde la posicion nueva y volver a
-     * colocar la camara. Coste: ~1 vez por vida, no por frame. */
-    gen_restore_checkpoint();
-    scroll_total = (uint32_t)((VC_MAP_ROWS - 1) * 8);
-    scroll_val   = (uint16_t)((0 - scroll_total) & 0xFF);
-    world_row    = VC_MAP_ROWS - 2;
-    vc_set_scroll_y(scroll_val);
-    for (r = 0; r < VC_MAP_ROWS; r++) {
-        generate_world_row((uint32_t)r);
-    }
-
-    /* El barco y el bidon vuelven a su sitio del tramo. */
-    boat_active = 0;
-    boat_next   = 40;
-    boat_y      = 0;
-    fuel_active = 0;
-    fuel_next   = 2;
-    fuel_y      = 0;
-
-    plane_place_safe();
-    scroll_speed = SCROLL_NORM;
-    scroll_acc   = 0;
-
-    /* Recarga el combustible hasta un minimo. Sin esto, si se murio por
-     * quedarse sin fuel (fuel == 0), al reaparecer volveria a morir al
-     * instante siguiente y se perderian las 3 vidas seguidas (game over
-     * instantaneo). Se da medio deposito para tener margen. */
-    if (fuel < FUEL_RESPAWN) fuel = FUEL_RESPAWN;
-    fuel_tick = 0;
-}
-
 /* Colision bala <-> barco y bala <-> isla/orilla (por celda). */
 static void check_bullet_collisions(void) {
     uint8_t i;
@@ -1668,13 +1672,8 @@ static void check_bullet_collisions(void) {
 
         /* Bala <-> barco (caja AABB). */
         if (boat_active) {
-            vc_box_t bb, ob;
-            bb.x = bullet_x[i];
-            bb.y = bullet_y[i];
-            bb.w = 2;               /* bala estrecha */
-            bb.h = 6;
-            vc_box_from_sprite(&ob, boat_x, boat_y, 16);
-            if (vc_box_overlap(&bb, &ob)) {
+            if (fv_box_toca(bullet_x[i], bullet_y[i], 2, 6,
+                         boat_x, boat_y, 16, 16)) {
                 bullet_alive[i] = 0;
                 boat_active = 0;    /* destruye el barco */
                 boom_active = 1;    /* explosion en su sitio   */
@@ -1731,10 +1730,8 @@ static void check_plane_collisions(void) {
 
     /* Avion <-> barco (caja AABB). */
     if (boat_active) {
-        vc_box_t pb, ob;
-        vc_box_from_sprite(&pb, plane_x, plane_y, PLANE_W);
-        vc_box_from_sprite(&ob, boat_x, boat_y, 16);
-        if (vc_box_overlap(&pb, &ob)) {
+        if (fv_box_toca(plane_x, plane_y, PLANE_W, PLANE_H,
+                     boat_x, boat_y, 16, 16)) {
             boat_active = 0;   /* choque destruye ambos */
             plane_hit();
             return;
@@ -1750,13 +1747,10 @@ static void check_plane_collisions(void) {
      * al soltar el bidon: lo cargado se queda y el bidon se da por recogido.
      * Con el deposito a tope no se toca: el bidon pasa de largo. */
     if (fuel_active && fuel > 0) {
-        vc_box_t pb, fb;
         /* La caja del avion es de 16 px (avion a escala 2x); la del bidon se
          * toma a su tamano real de 8 px para que el contacto sea sincero. */
-        vc_box_from_sprite(&pb, plane_x, plane_y, PLANE_W);
-        vc_box_from_sprite(&fb, fuel_x, fuel_y, 8);
-
-        if (vc_box_overlap(&pb, &fb)) {
+        if (fv_box_toca(plane_x, plane_y, PLANE_W, PLANE_H,
+                     fuel_x, fuel_y, 8, 8)) {
             fuel_touching = 1;
             fuel_refuel_tick++;
             if (fuel_refuel_tick >= FUEL_REFUEL_EVERY) {
@@ -1801,14 +1795,35 @@ static void update_boat(void) {
     if (boat_active) {
         boat_y = (uint8_t)(boat_y + scroll_step);
 
-        /* Deriva lateral con rebote. Los limites dependen del tipo y se
-         * FIJAN al crear el enemigo (boat_xmin/boat_xmax): si se recalcularan
-         * aqui segun boat_is_heli, un helicoptero nacido fuera del cauce podia
-         * quedar atrapado rebotando contra el borde del rio en vez de cruzar
-         * la pantalla.
-         *   BARCO       -> solo el cauce (no navega por el cesped)
-         *   HELICOPTERO -> toda la pantalla, ignora el rio: vuela.
-         * Se mueve 1 px cada pocos frames para que no sea brusco. */
+        /* Los limites laterales se recalculan CADA FRAME con el perfil del cauce
+         * de la fila en la que esta el enemigo: el rio cambia de ancho y si se
+         * quedan fijos, el barco acaba navegando sobre el cesped o dentro de la
+         * isla. Si el cauce se cierra a su lado, el enemigo empuja de vuelta al
+         * agua. */
+        {
+            uint8_t row;
+            uint8_t r_izq, r_der;
+
+            if (boat_y >= VC_SCREEN_H) { boat_active = 0; return; }
+            row = FILA_CINTA(boat_y);
+            r_izq = (uint8_t)((river_l[row] + 1) * 8);        /* agua interior */
+            r_der = (uint8_t)((river_r[row] - 1) * 8);        /* 8 px antes de la orilla */
+
+            /* Con isla central, el barco se queda en el brazo donde esta. */
+            if (island_l[row] != 0xFF) {
+                if (boat_x + 8 <= (uint8_t)(island_l[row] * 8)) {
+                    r_der = (uint8_t)(island_l[row] * 8 - 16);
+                } else {
+                    r_izq = (uint8_t)((island_r[row] + 1) * 8);
+                }
+            }
+            boat_xmin = r_izq;
+            boat_xmax = (uint8_t)((r_der > r_izq) ? r_der : r_izq);
+        }
+
+        /* Deriva lateral con rebote, 1 px cada pocos frames. El HELICOPTERO
+         * tambien queda sujeto al cauce: en el arcade los helicopteros vuelan
+         * por el agua, no por el cesped. */
         if (++boat_drift >= (boat_is_heli ? 2 : 4)) {
             boat_drift = 0;
             if (boat_dir == 0) {
@@ -1819,35 +1834,33 @@ static void update_boat(void) {
                 if (boat_x <= boat_xmin) boat_dir = 0;
             }
         }
-
-        if (boat_y >= VC_SCREEN_H) {
-            boat_active = 0;
-        }
+        if (boat_x < boat_xmin) boat_x = boat_xmin;
+        if (boat_x > boat_xmax) boat_x = boat_xmax;
         return;
     }
 
     if (world_row >= boat_next) {
-        /* Se decide primero QUE es: el barco nace en el agua del cauce, el
-         * helicoptero puede nacer en cualquier columna de la pantalla. */
-        uint8_t r0 = (uint8_t)(world_row & 31);
-        uint8_t l  = (uint8_t)(river_l[r0] + 2);
-        uint8_t r  = (uint8_t)(river_r[r0] - 2);
+        /* Nace SIEMPRE dentro del cauce de la fila por la que entra: el perfil
+         * es variable, asi que se usa el de esa fila y se evita la isla. */
+        uint8_t r0 = FILA_CINTA(0);
+        uint8_t l  = (uint8_t)(river_l[r0] + 1);
+        uint8_t r  = (uint8_t)(river_r[r0] - 1);
+        uint8_t col;
 
         boat_is_heli = (uint8_t)(rng_next() & 1);   /* mitad barcos, mitad helis */
 
-        if (boat_is_heli) {
-            boat_xmin = HELI_X_MIN;
-            boat_xmax = HELI_X_MAX;
-            boat_x = (uint8_t)((rng_next() % (HELI_X_MAX / 8)) * 8);
-            boat_dir = (uint8_t)(rng_next() & 1);
-        } else {
-            uint8_t lane = (uint8_t)(rng_next() % (uint8_t)((r > l + 1) ? (r - l) : 1));
-            boat_xmin = BOAT_X_MIN;
-            boat_xmax = BOAT_X_MAX;
-            boat_x = (uint8_t)((l + lane) * 8);
-            if (boat_x > BOAT_X_MAX) boat_x = BOAT_X_MAX;
-            boat_dir = (uint8_t)(lane & 1);
+        if (island_l[r0] != 0xFF) {
+            /* Elige el brazo mas ancho para que quepa. */
+            if ((island_l[r0] - l) < (r - island_r[r0])) l = (uint8_t)(island_r[r0] + 1);
+            else                                        r = (uint8_t)(island_l[r0] - 1);
         }
+        if (r <= l) r = (uint8_t)(l + 1);
+
+        col = (uint8_t)(l + (rng_next() % (uint8_t)(r - l)));
+        boat_x = (uint8_t)(col * 8);
+        boat_xmin = (uint8_t)(l * 8);
+        boat_xmax = (uint8_t)(r * 8);
+        boat_dir = (uint8_t)(rng_next() & 1);
         boat_y = 0;
         boat_drift = 0;
         boat_active = 1;
@@ -1871,9 +1884,9 @@ static void update_fuel(void) {
         /* Aparece en el AGUA REAL de la fila superior (perfil variable), no en
          * columnas fijas: si no, caeria sobre el cesped o dentro de un islote
          * y seria imposible recogerlo. */
-        uint8_t r0 = (uint8_t)(world_row & 31);
-        uint8_t l  = (uint8_t)(river_l[r0] + 2);
-        uint8_t r  = (uint8_t)(river_r[r0] - 2);
+        uint8_t r0 = FILA_CINTA(0);
+        uint8_t l  = (uint8_t)(river_l[r0] + 1);
+        uint8_t r  = (uint8_t)(river_r[r0] - 1);
         uint8_t col;
         /* Elige una columna de agua que NO este ocupada por la isla central. */
         for (;;) {
@@ -2024,7 +2037,7 @@ static void advance_scroll(void) {
 
     scroll_val = (uint16_t)((scroll_val - scroll_step) & 0xFF);
     scroll_total += scroll_step;      /* px recorridos, sin envolver   */
-    vc_set_scroll_y(scroll_val);
+    vid_set_scroll_y(scroll_val);
 }
 
 /* ===========================================================================
@@ -2073,9 +2086,14 @@ static void reset_game(void) {
      * agua sigue donde estaba. Si no se limpia, algunas filas no se repintan
      * y quedan con la decoracion de la partida anterior (agua encima del
      * cesped, cauce de dos anchos). */
-    vc_clear_vram();
-    vc_set_scroll_y(0);
+    vid_clear_vram();
+    vid_set_scroll_y(0);
     gen_reset();
+
+    /* vid_clear_vram() expande SOLO la fuente: los patrones propios (rio,
+     * orillas, isla, puente y TODOS los de sprite) se borran. Sin recargarlos
+     * el rio sale en blanco y los sprites como bloques solidos. */
+    load_patterns();
 
     /* Re-genera el rio (misma semilla => mismo layout). El rio se repinta
      * entero, asi que no hay que borrar el panel del GAME OVER a mano. */
@@ -2086,7 +2104,7 @@ static void reset_game(void) {
      * cae justo donde debe (si no, se pinta un layout y se ensena otro). */
     scroll_total = (uint32_t)((VC_MAP_ROWS - 1) * 8);   /* ver setup_video() */
     scroll_val = (uint16_t)((0 - scroll_total) & 0xFF);
-    vc_set_scroll_y(scroll_val);
+    vid_set_scroll_y(scroll_val);
 
     for (row = 0; row < VC_MAP_ROWS; row++) {
         generate_world_row((uint32_t)row);
@@ -2161,8 +2179,8 @@ static void game_over_screen(void) {
             const char *t = lineas[ly];
             uint8_t col = (uint8_t)((ly == 0) ? 14 : (ly == 1 ? 12 : 15));
             while (*t) {
-                vc_put_cell(col, fila, (uint8_t)*t);
-                vc_put_attr(col, fila, PAL_MENU);
+                fv_put_cell(col, fila, (uint8_t)*t);
+                fv_put_attr(col, fila, PAL_MENU);
                 col++;
                 t++;
             }
@@ -2200,7 +2218,7 @@ int main(void) {
     oam_cache_invalida = 1;   /* el OAM se limpio: reescribir patrones */
 
     while (!quit_flag) {
-        vc_wait_vblank();
+        vid_wait_vblank();
         perf_begin();
 
         /* 0) Esperando FIRE (inicio de partida o tras un choque): el avion esta
@@ -2216,7 +2234,7 @@ int main(void) {
             draw_plane();
             hud_draw();
             update_water_anim();
-            vc_wait_vblank_end();
+            vid_wait_vblank_end();
             perf_end();
             continue;
         }
@@ -2254,7 +2272,7 @@ int main(void) {
             uint8_t k;
             sprites_off = 1;
             /* Los 32 sprites: cubre objetos y HUD sin enumerar cada slot. */
-            for (k = 0; k < 32; k++) vc_sprite_disable(k);
+            for (k = 0; k < 32; k++) fv_sprite_disable(k);
         }
 
         /* 4) HUD (solo en partida). */
@@ -2276,14 +2294,14 @@ int main(void) {
         }
         perf_mark(2);
 
-        vc_wait_vblank_end();
+        vid_wait_vblank_end();
         perf_end();
     }
 
-    vc_wait_vblank();
-    vc_clear_oam();
-    vc_set_scroll_y(0);
-    vc_wait_vblank_end();
+    vid_wait_vblank();
+    fv_clear_oam();
+    vid_set_scroll_y(0);
+    vid_wait_vblank_end();
 
     return 0;
 }
