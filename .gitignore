@@ -5,3 +5,6 @@ frames/
 *.png
 !docs/img/*.png
 symbols.txt
+# capturas de analisis: SI se versionan (son referencia)
+!doc/capturas/**
+!doc/capturas/**/*.png
