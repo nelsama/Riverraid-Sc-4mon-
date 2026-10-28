@@ -130,22 +130,27 @@ static uint8_t  scroll_step;
 #define HUD_PAT_BAR_OFF 54      /* celda de barra vacia               */
 
 /* ===========================================================================
- * TILES (propios en $01-$1F)
- * =========================================================================== */
-#define TILE_BLANK   0x00
-#define TILE_GRASS   0x01
-#define TILE_WATER   0x02
-#define TILE_WATER2  0x03
-#define TILE_ISLAND   0x04   /* isla arriba-izquierda */
-#define TILE_ISLAND_R 0x05   /* isla arriba-derecha   */
-#define TILE_ISLAND_L2 0x06  /* isla abajo-izquierda  */
-#define TILE_ISLAND_R2 0x07  /* isla abajo-derecha    */
-#define TILE_EDGE_L0  0x08   /* arena en el borde IZQUIERDO (variante A) */
-#define TILE_EDGE_L1  0x09   /* arena en el borde IZQUIERDO (variante B) */
-#define TILE_EDGE_R0  0x0A   /* arena en el borde DERECHO (variante A)   */
-#define TILE_EDGE_R1  0x0B   /* arena en el borde DERECHO (variante B)   */
-#define TILE_TREE     0x0C   /* arbusto sobre la isla central            */
-#define TILE_PANEL    0x0D   /* fondo solido del panel de GAME OVER       */
+ * TILES
+ * ===========================================================================
+ * IMPORTANTE: los patrones de fondo 0x00-0x07 y los de sprite 0-2 los
+ * SOBRESCRIBE el core en su setup ($D816) con los de demo, y el setup puede
+ * repetirse. Si el cesped o el agua caen ahi, su patron se pierde y la celda
+ * se pinta con el color de fondo (solo se ven las orillas). Verificado en el
+ * emulador. Por eso TODOS los tiles viven en 0x10 en adelante. */
+#define TILE_BLANK    0x00
+#define TILE_GRASS    0x10
+#define TILE_WATER    0x11
+#define TILE_WATER2   0x12
+#define TILE_ISLAND   0x13   /* isla arriba-izquierda */
+#define TILE_ISLAND_R 0x14   /* isla arriba-derecha   */
+#define TILE_ISLAND_L2 0x15  /* isla abajo-izquierda  */
+#define TILE_ISLAND_R2 0x16  /* isla abajo-derecha    */
+#define TILE_EDGE_L0  0x17   /* arena en el borde IZQUIERDO (variante A) */
+#define TILE_EDGE_L1  0x18   /* arena en el borde IZQUIERDO (variante B) */
+#define TILE_EDGE_R0  0x19   /* arena en el borde DERECHO (variante A)   */
+#define TILE_EDGE_R1  0x1A   /* arena en el borde DERECHO (variante B)   */
+#define TILE_TREE     0x1B   /* arbusto sobre la isla central            */
+#define TILE_PANEL    0x1C   /* fondo solido del panel de GAME OVER       */
 
 /* ===========================================================================
  * PALETAS
@@ -658,7 +663,7 @@ static void hud_draw(void) {
  * golpe cada bloque, pero el cauce se mueve hacia el a razon de 1 celda por
  * fila. Asi el borde nunca "vibra" (0 saltos medidos) y la partida del cauce
  * nace y muere progresivamente, sin piezas sueltas ni islas fantasma. */
-#define GEN_BLOCK      8      /* filas de mundo por bloque del LFSR      */
+#define GEN_BLOCK      40     /* filas por tramo: recto y largo como GAME.BIN */
 /* El cauce del arcade ocupa la mayor parte de la pantalla: SEMIANCHO de 5 a 9
  * celdas = 10..19 celdas de agua. Estrecharlo mas dejaba "dos rayas" con la
  * orilla pegada al centro (bug visto en captura). */
@@ -755,29 +760,26 @@ static uint8_t generate_world_row(uint32_t n) {
     if (gen_block_row == 0) gen_new_block();
     if (++gen_block_row >= GEN_BLOCK) gen_block_row = 0;
 
-    /* --- Ancho del cauce: ESCALERA (medido en docs/img/isl2.png) ---
+    /* --- Ancho del cauce: tramo LARGO y recto, escalon de 1 celda ---
      *
-     * La version que se veia bien NO movia la orilla en cada fila: la dejaba
-     * RECTA y la desplazaba 1 celda de golpe cada 8 filas (64 px), con los
-     * tiles de orilla L0/L1 encadenando la diagonal. Medido en la captura
-     * buena: agua de las celdas 10..28 (19 celdas) y escalones de 1 celda.
+     * Medido en el binario de referencia (output/referencia_buena.bin): el
+     * cauce se queda practicamente recto durante casi toda la pantalla y el
+     * cambio de ancho es un escalon recto corto, simetrico en los dos bordes.
      *
-     * El LFSR decide el NIVEL (0..2 celda de muesca por lado) de cada tramo,
-     * nunca la posicion fila a fila. */
+     * Por eso: el nivel se mantiene GEN_BLOCK filas (40) y solo cambia +-1
+     * celda por lado y solo cuando el LFSR lo pide. Antes cambiaba cada 8
+     * filas y con mas amplitud: se veia un zigzag/degradado compuesto. */
+    if ((n % GEN_BLOCK) == 0) {
+        uint8_t want = (uint8_t)(gen_seed_lo & 0x03);
+        if (want > 2) want = 1;          /* 0,1,2,1: amplitud +-1 celda */
+        gen_level = want;
+    }
+
     {
         uint8_t off = gen_level;
         gen_left  = (uint8_t)(RIVER_LEFT + 2 + off);
         gen_right = (uint8_t)(RIVER_RIGHT - 2 - off);
         gen_half  = (uint8_t)((gen_right - gen_left + 1) / 2);
-    }
-
-    /* El nivel cambia cada 8 filas (el escalon del arcade). */
-    if ((n & 7) == 0) {
-        /* 0,1,2,1 segun el LFSR: solo estrecha/ensancha 1 celda por escalon. */
-        uint8_t want = (uint8_t)(gen_seed_lo & 0x03);
-        if (want > 2) want = 1;
-        if (want > gen_level) gen_level++;
-        else if (want < gen_level) gen_level--;
     }
 
     /* --- Tierra central (isla del río) ---
