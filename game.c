@@ -739,6 +739,12 @@ static void hud_draw(void) {
  * es 12..27, o sea centro 19/20. El avion (16 px = 2 celdas) cabe justo. */
 #define BRIDGE_GAP_L   19
 #define BRIDGE_GAP_R   20
+/* ALTO DEL PUENTE en filas de mundo (8 px cada una). El bloque del puente dura
+ * GEN_BLOCK = 16 filas (128 px de pantalla), o sea media pantalla de viga: en
+ * el arcade el puente es un travesaño fino. Solo las PRIMERAS filas del bloque
+ * llevan viga; las demas se pintan como agua. OJO: el bloque entero sigue
+ * siendo de puente para el checkpoint (gen_bridge no cambia). */
+#define BRIDGE_ROWS    3
 
 /* Limites de la zona de agua dentro de la cinta (deja cesped a los lados). */
 #define GEN_ZONE_L     7      /* primera columna jugable                  */
@@ -988,18 +994,27 @@ static uint8_t generate_world_row(uint32_t n) {
      * isla, entidad y si es embudo o puente). gen_block_row cuenta las filas
      * ya generadas con el bloque actual. */
     if (gen_block_row == 0) { gen_new_block(); }
-    if (++gen_block_row >= GEN_BLOCK) gen_block_row = 0;
 
-    /* Cruzar el puente = nuevo checkpoint. Solo cuenta una vez por puente. */
-    puente_bit[cinta_row] = gen_bridge;
-    if (!gen_bridge) {
-        if (gen_crossed) {
+    /* --- VIGA: solo las primeras filas del bloque de puente ---
+     * `gen_bridge` marca el BLOQUE entero (para el checkpoint), pero la viga
+     * visible dura BRIDGE_ROWS filas. Se decide ANTES de incrementar
+     * gen_block_row, que vale 0 en la primera fila del bloque. */
+    {
+        uint8_t es_viga = (uint8_t)(gen_bridge && gen_block_row < BRIDGE_ROWS);
+        puente_bit[cinta_row] = es_viga;
+
+        /* Cruzar el puente = nuevo checkpoint, una vez por puente: cuenta en la
+         * PRIMERA fila de la viga, no al terminar el bloque (asi la muerte tras
+         * pasar el travesaño ya repite desde el puente y no desde antes). */
+        if (es_viga) {
+            gen_crossed = 1;
+        } else if (gen_crossed) {
             gen_save_checkpoint();
             gen_crossed = 0;
         }
-    } else if (!gen_crossed) {
-        gen_crossed = 1;
     }
+
+    if (++gen_block_row >= GEN_BLOCK) gen_block_row = 0;
 
     /* --- Ancho y CURVA: los bordes se acercan al objetivo 1 celda por fila ---
      *
@@ -1137,7 +1152,7 @@ static uint8_t generate_world_row(uint32_t n) {
              * cruzar, solo una franja de arena. El hueco esta en el centro del
              * cauce, que es a donde converge el embudo (GEN_PIER_L..R), asi que
              * siempre cae en la misma columna y el jugador puede anticiparlo. */
-            if (gen_bridge && col >= gen_left && col <= gen_right &&
+            if (puente_bit[cinta_row] && col >= gen_left && col <= gen_right &&
                 (col < BRIDGE_GAP_L || col > BRIDGE_GAP_R)) {
                 tile = TILE_BRIDGE;
                 attr = PAL_ISLAND;         /* arena maciza */
@@ -1321,7 +1336,6 @@ static void setup_video(void) {
     game_over = 0;
 
     snd_init();
-    snd_engine_on();
 
     hud_setup();
     hud_draw();
@@ -2136,7 +2150,9 @@ static void reset_game(void) {
      * 32 sprites, asi que hud_draw() solo no basta (no repondria el HUD). */
     hud_setup();
     hud_draw();
-    snd_engine_on();
+
+    /* El motor NO se enciende aqui: el avion esta parado esperando FIRE (lo
+     * mismo que al arrancar). Se enciende en main() al salir de esperando_fire. */
 }
 
 /* ===========================================================================

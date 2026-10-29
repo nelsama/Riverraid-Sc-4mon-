@@ -100,10 +100,16 @@ static void snd_silence(void) {
     engine_on = 0;
 }
 
-/* Motor del avion: ruido grave continuo en la voz 1. */
+/* Motor del avion: ruido grave continuo en la voz 1.
+ *
+ * VOLUMEN: el SID tiene un unico registro de volumen global ($D418), asi que
+ * bajar solo el motor es imposible... salvo por la ENVOLVENTE: con
+ * sustain < 15 la voz suena mas floja sin tocar el volumen maestro de los
+ * efectos. Se usa sustain 5 (de 15) y un decay largo, que da un zumbido de
+ * fondo en vez de un rugido que tapa el disparo y las explosiones. */
 static void snd_engine_on(void) {
-    sid_wr(SID_V1 + 5, 0x08);      /* ataque 0, decay 8 */
-    sid_wr(SID_V1 + 6, 0xF0);      /* sustain 15, release 0 */
+    sid_wr(SID_V1 + 5, 0x09);      /* ataque 0, decay 9 (baja despacio) */
+    sid_wr(SID_V1 + 6, 0x57);      /* sustain 5/15, release 7           */
     sid_freq(SID_V1, 0x0800);      /* ruido grave */
     sid_wr(SID_V1 + 4, WF_NOISE | GATE);
     engine_on = 1;
