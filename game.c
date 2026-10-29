@@ -152,11 +152,13 @@ static uint8_t  scroll_step;
 #define TILE_ISLAND_R 0x14   /* isla arriba-derecha   */
 #define TILE_ISLAND_L2 0x15  /* isla abajo-izquierda  */
 #define TILE_ISLAND_R2 0x16  /* isla abajo-derecha    */
-#define TILE_EDGE_L0  0x17   /* costa con el AGUA a la DERECHA (base)    */
-#define TILE_EDGE_R0  0x19   /* la misma costa ESPEJADA: agua a la IZQ.  */
-/* OJO: existen las variantes L1/R1 (0x18/0x1A), pero NO se usan: son las que
- * hacian el "escalon" en la orilla y sobraban. Un solo dibujo y su espejo bastan
- * para los cuatro casos (isla izq/der y tierra con el agua a un lado u otro). */
+#define TILE_COAST    0x17   /* BASE: cesped a la IZQ, arena a la DER.
+                              * Va donde el MAR esta a su DERECHA.       */
+#define TILE_COAST_M  0x19   /* ESPEJO: arena a la IZQ, cesped a la DER.
+                              * Va donde el MAR esta a su IZQUIERDA.     */
+/* Solo hay estos dos. OJO al leer el patron: el bit 7 es el pixel IZQUIERDO y
+ * el indice es (p0<<1)|p1, pero el dibujo sale al REVES de lo que sugiere el
+ * byte, asi que ante la duda se mira una captura. */
 #define TILE_TREE     0x1B   /* arbusto sobre la isla central            */
 #define TILE_PANEL    0x1C   /* fondo solido del panel de GAME OVER       */
 #define TILE_BRIDGE   0x1D   /* viga del puente (arena maciza)            */
@@ -379,12 +381,17 @@ static const uint8_t tile_island_bl_p0[8] = { 0xF1, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
 static const uint8_t tile_island_bl_p1[8] = { 0x8E, 0x80, 0xC0, 0xF0, 0xFF, 0xFF, 0xFF, 0xFF };
 static const uint8_t tile_island_br_p0[8] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 static const uint8_t tile_island_br_p1[8] = { 0x1F, 0x1F, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-static const uint8_t tile_edge_l0_p0[8] = { 0x0F, 0x0F, 0x0F, 0x0F, 0x1F, 0x1F, 0x1F, 0x1F };
-static const uint8_t tile_edge_l0_p1[8] = { 0xF0, 0xF0, 0xF0, 0xF0, 0xE0, 0xE0, 0xE0, 0xE0 };
-/* Mismo dibujo con las filas ESPEJO (bits invertidos): el core no voltea tiles
- * de fondo, asi que el lado izquierdo necesita su propio patron. */
-static const uint8_t tile_edge_r0_p0[8] = { 0xF0, 0xF0, 0xF0, 0xF0, 0xF8, 0xF8, 0xF8, 0xF8 };
-static const uint8_t tile_edge_r0_p1[8] = { 0x0F, 0x0F, 0x0F, 0x0F, 0x07, 0x07, 0x07, 0x07 };
+/* MEDIDO en el emulador (no fiarse del byte):
+ *   0x17 con p0=0x0F,p1=0xF0 se ve   aaaagggg  = arena IZQ / cesped DER
+ *   0x19 con p0=0xF0,p1=0x0F se ve   ggggaaaa  = cesped IZQ / arena DER
+ * El bit 7 del patron es el pixel IZQUIERDO, asi que el primer byte "1" sale a
+ * la izquierda; leer el hex a ojo lleva a cruzarlos. Por eso 0x19 es el BASE. */
+static const uint8_t tile_edge_l0_p0[8] = { 0xF0, 0xF0, 0xF0, 0xF0, 0xF8, 0xF8, 0xF8, 0xF8 };
+static const uint8_t tile_edge_l0_p1[8] = { 0x0F, 0x0F, 0x0F, 0x0F, 0x07, 0x07, 0x07, 0x07 };
+/* Mismo dibujo ESPEJADO: el core no voltea tiles de fondo, asi que el lado del
+ * agua necesita su propio patron. */
+static const uint8_t tile_edge_r0_p0[8] = { 0x0F, 0x0F, 0x0F, 0x0F, 0x1F, 0x1F, 0x1F, 0x1F };
+static const uint8_t tile_edge_r0_p1[8] = { 0xF0, 0xF0, 0xF0, 0xF0, 0xE0, 0xE0, 0xE0, 0xE0 };
 /* --- FIN GENERADO --- */
 
 /* Arbol/vegetacion para el interior del islote. La forma debe seguir el
@@ -1205,12 +1212,12 @@ static uint8_t generate_world_row(uint32_t n) {
             } else if (col == gen_left) {
                 /* Costa de la ORILLA IZQUIERDA: el agua queda a la DERECHA,
                  * o sea el tile base. */
-                tile = TILE_EDGE_L0;
+                tile = TILE_COAST;
                 attr = PAL_EDGE;          /* cesped+orilla */
             } else if (col == gen_right) {
                 /* Costa de la ORILLA DERECHA: el agua queda a la IZQUIERDA,
                  * o sea el ESPEJO del anterior. */
-                tile = TILE_EDGE_R0;
+                tile = TILE_COAST_M;
                 attr = PAL_EDGE;          /* cesped+orilla */
             } else if ((il != 0xFF) && (col >= il) && (col <= ir)) {
                 /* TIERRA CENTRAL (isla). Aqui la tierra esta en el CENTRO, asi
@@ -1220,10 +1227,10 @@ static uint8_t generate_world_row(uint32_t n) {
                  * Antes se usaban los mismos que la orilla y la arena salia
                  * por fuera, pegada al agua, con el cesped por dentro. */
                 if (col == il) {
-                    tile = TILE_EDGE_R0;          /* espejo: agua a la izq.  */
+                    tile = TILE_COAST_M;          /* espejo: agua a la izq.  */
                     attr = PAL_EDGE;
                 } else if (col == ir) {
-                    tile = TILE_EDGE_L0;          /* base: agua a la derecha  */
+                    tile = TILE_COAST;          /* base: agua a la derecha  */
                     attr = PAL_EDGE;
                 } else {
                     tile = TILE_GRASS;
@@ -1282,8 +1289,8 @@ static void load_patterns(void) {
     fv_load_bg_pattern(TILE_ISLAND_R2, tile_island_br_p0, tile_island_br_p1);
 
     /* Transicion tierra->agua: arena y agua. */
-    fv_load_bg_pattern(TILE_EDGE_L0, tile_edge_l0_p0, tile_edge_l0_p1);
-    fv_load_bg_pattern(TILE_EDGE_R0, tile_edge_r0_p0, tile_edge_r0_p1);
+    fv_load_bg_pattern(TILE_COAST, tile_edge_l0_p0, tile_edge_l0_p1);
+    fv_load_bg_pattern(TILE_COAST_M, tile_edge_r0_p0, tile_edge_r0_p1);
     fv_load_bg_pattern(TILE_TREE,    tile_tree_p0,    tile_tree_p1);
     fv_load_bg_pattern(TILE_BRIDGE,  tile_bridge_p0,  tile_bridge_p1);
     /* Fondo opaco del panel de GAME OVER (TILE_PANEL usa el indice 1). */
