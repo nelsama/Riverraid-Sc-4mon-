@@ -42,6 +42,10 @@
 #define PLANE_MIN_X  (RIVER_LEFT * 8)
 #define PLANE_W      16     /* el avion (8x8 a escala 2x) ocupa 16x16 px */
 #define PLANE_H      16
+/* Margen TRANSPARENTE del patron del avion (8x8 dibujado, 2 px de aire a
+ * escala 2x). La colision ignora esos pixeles: si no, el avion muere con el
+ * borde invisible rozando la orilla ("choque contra algo que no se ve"). */
+#define PLANE_HIT_INSET  1
 #define PLANE_MAX_X  ((RIVER_RIGHT + 1) * 8 - 16)   /* avion 16 px de ancho */
 
 /* El BARCO no puede salir del cauce: rebota en las orillas. */
@@ -1693,14 +1697,13 @@ static void update_bullets(void) {
 /**
  * FILA DE CINTA que se ve en la coordenada y de la pantalla.
  *
- * El scroll de este juego DECRECE (scroll_val baja para que el terreno baje):
- *     fila_mundo = scroll_total >> 3   (la que esta arriba)
- *     cinta      = (32 - fila_mundo) & 31
- * Es la MISMA formula que usa generate_world_row() al pintar. Con
- * (scroll_val + y) >> 3 se lee el orden INVERSO y la colision mira el cauce de
- * otra fila (verde donde hay agua). */
-#define FILA_CINTA(y)  ((uint8_t)((VC_MAP_ROWS - (uint8_t)((scroll_total + (y)) >> 3)) \
-                                  & (VC_MAP_ROWS - 1)))
+ * Se usa LA MISMA cuenta que hace el core para dibujar:
+ *     fila_visible = (scroll_val + y) >> 3   (mod 32)
+ * con scroll_val, el byte que se escribe en el registro. NO con scroll_total:
+ * scroll_total crece en sentido contrario al registro, asi que las dos dan
+ * filas distintas desde el primer paso y la colision acababa mirando el cauce
+ * de otra fila (moria en mitad del agua y sobrevivia sobre la orilla). */
+#define FILA_CINTA(y)  ((uint8_t)(((scroll_val + (y)) >> 3) & (VC_MAP_ROWS - 1)))
 
 /* Devuelve 1 si la celda es AGUA NAVEGABLE (ni orilla, ni isla, ni viga).
  *
@@ -1772,13 +1775,18 @@ static uint8_t plane_on_bank(uint16_t x, uint8_t y) {
      * (plane_y + PLANE_H - 1); con 1 px de scroll por frame eso leia la orilla
      * de la fila siguiente, o sea una linea diagonal que el jugador veia como
      * una "V" de collision imposible. */
-    /* TODAS las celdas que ocupa el sprite, no solo las dos de los extremos.
-     * Con el avion en x=100..115 eso es 12, 13 y 14: mirar solo 12 y 14 dejaba
-     * la 13 sin comprobar, y ahi es justo donde cae la costa cuando el rio se
-     * estrecha. El avion se metia medio sprite en la orilla sin morir. */
+    /* Celdas que ocupa el DIBUJO del sprite, no la caja de 16x16.
+     *
+     * El patron del avion mide 8x8 con el borde transparente: al pintarlo a
+     * escala 2x el dibujo real ocupa 14x14 y quedan 2 px invisibles alrededor.
+     * Colisionando con la caja entera, el avion moria con el borde transparente
+     * aun separado de la orilla: el jugador lo vive como chocar con algo que no
+     * ve. Se recorta 1 px por lado (PLANE_HIT_INSET). */
     {
-        uint8_t c0 = (uint8_t)(x >> 3);
-        uint8_t c1 = (uint8_t)((x + PLANE_W - 1) >> 3);
+        uint16_t x0 = (uint16_t)(x + PLANE_HIT_INSET);
+        uint16_t x1 = (uint16_t)(x + PLANE_W - PLANE_HIT_INSET - 1);
+        uint8_t c0 = (uint8_t)(x0 >> 3);
+        uint8_t c1 = (uint8_t)(x1 >> 3);
         uint8_t c;
         for (c = c0; c <= c1; c++) {
             if (celda_en_tierra(cinta_row, c)) return 1;
@@ -1931,7 +1939,7 @@ static void check_plane_collisions(void) {
          * por la fila de en medio sin que saltara la colision. */
         uint8_t k;
         last_bank = 0;
-        for (k = 0; k < PLANE_H; k++) {
+        for (k = PLANE_HIT_INSET; k < PLANE_H - PLANE_HIT_INSET; k++) {
             if (plane_on_bank(plane_x, (uint8_t)(plane_y + k))) {
                 last_bank = 1;
                 break;
