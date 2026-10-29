@@ -263,8 +263,6 @@ static uint8_t  boat_y;
 static uint8_t  boat_dir;       /* 0 = derecha, 1 = izquierda (deriva)      */
 static uint8_t  boat_drift;     /* contador de frames para el paso lateral  */
 static uint8_t  boat_is_heli;   /* 1 = el enemigo actual es un helicoptero  */
-static uint8_t  boat_xmin;      /* limites laterales fijados al crearlo      */
-static uint8_t  boat_xmax;
 static uint32_t boat_next;
 
 /* Explosion (sprite efimero al destruir un barco). */
@@ -1681,21 +1679,58 @@ static void update_bullets(void) {
 #define FILA_CINTA(y)  ((uint8_t)((VC_MAP_ROWS - (uint8_t)((scroll_total + (y)) >> 3)) \
                                   & (VC_MAP_ROWS - 1)))
 
-static uint8_t celda_en_tierra(uint8_t cinta_row, uint8_t c) {
+/* Devuelve 1 si la celda es AGUA NAVEGABLE (ni orilla, ni isla, ni viga).
+ *
+ * Es la UNICA fuente de verdad para "aqui se puede estar": la usan la colision
+ * del avion, los rebotes de barcos y helicopteros y la aparicion de bidones y
+ * enemigos. Tenerla duplicada fue el origen de que cada cosa consultara el
+ * perfil a su manera y hubiera objetos sobre el cesped. */
+static uint8_t celda_agua(uint8_t cinta_row, uint8_t c) {
     uint8_t l  = river_l[cinta_row];
     uint8_t r  = river_r[cinta_row];
     uint8_t il = island_l[cinta_row];
     uint8_t ir = island_r[cinta_row];
 
     /* Los bordes son tiles de ARENA, no agua: el agua va de l+1 a r-1. */
-    if (c <= l || c >= r) return 1;
-    if (il != 0xFF && c >= il && c <= ir) return 1;
+    if (c <= l || c >= r) return 0;
+    if (il != 0xFF && c >= il && c <= ir) return 0;
 
-    /* PUENTE: la viga es solida salvo por el hueco. gen_bridge solo describe la
-     * fila que se esta generando, asi que el puente se apunta en una tabla por
-     * fila de cinta (un byte: 0 = no hay puente). */
-    if (puente_bit[cinta_row] && (c < BRIDGE_GAP_L || c > BRIDGE_GAP_R)) return 1;
-    return 0;
+    /* PUENTE: la viga es solida salvo por el hueco. */
+    if (puente_bit[cinta_row] && (c < BRIDGE_GAP_L || c > BRIDGE_GAP_R)) return 0;
+    return 1;
+}
+
+/* Lo contrario: cesped, orilla, isla o viga. */
+static uint8_t celda_en_tierra(uint8_t cinta_row, uint8_t c) {
+    return (uint8_t)(!celda_agua(cinta_row, c));
+}
+
+/* Caben los 16x16 px de un sprite con origen en (x, y)?
+ *
+ * OJO con las DOS dimensiones: con VC_SPR_SCALE2X el sprite ocupa 16 px, o sea
+ * DOS celdas de ancho y DOS filas de cinta de alto. Comprobar solo la celda de
+ * x >> 3 deja medio sprite sobre la orilla, y comprobar solo una fila deja la
+ * mitad de abajo sobre la tierra cuando el cauce cambia de ancho justo ahi. */
+static uint8_t sprite_cabe(uint16_t x, uint8_t y) {
+    uint8_t r0, r1;
+
+    if (x > (uint16_t)((VC_MAP_COLS - 2) * 8)) return 0;
+    r0 = FILA_CINTA(y);
+    r1 = FILA_CINTA((uint8_t)(y + 15));
+
+    /* TODAS las celdas del ancho (2 o 3), no solo los extremos: con el sprite
+     * en x=100..115 las celdas son 12, 13 y 14; mirar solo 12 y 14 dejaba la 13
+     * (justo donde cae la costa) sin comprobar. */
+    {
+        uint8_t c0 = (uint8_t)(x >> 3);
+        uint8_t c1 = (uint8_t)((x + 15) >> 3);
+        uint8_t c;
+        for (c = c0; c <= c1; c++) {
+            if (!celda_agua(r0, c)) return 0;
+            if (!celda_agua(r1, c)) return 0;
+        }
+    }
+    return 1;
 }
 
 static uint8_t plane_on_bank(uint16_t x, uint8_t y) {
@@ -1714,8 +1749,18 @@ static uint8_t plane_on_bank(uint16_t x, uint8_t y) {
      * (plane_y + PLANE_H - 1); con 1 px de scroll por frame eso leia la orilla
      * de la fila siguiente, o sea una linea diagonal que el jugador veia como
      * una "V" de collision imposible. */
-    if (celda_en_tierra(cinta_row, (uint8_t)(x >> 3))) return 1;
-    if (celda_en_tierra(cinta_row, (uint8_t)((x + PLANE_W - 1) >> 3))) return 1;
+    /* TODAS las celdas que ocupa el sprite, no solo las dos de los extremos.
+     * Con el avion en x=100..115 eso es 12, 13 y 14: mirar solo 12 y 14 dejaba
+     * la 13 sin comprobar, y ahi es justo donde cae la costa cuando el rio se
+     * estrecha. El avion se metia medio sprite en la orilla sin morir. */
+    {
+        uint8_t c0 = (uint8_t)(x >> 3);
+        uint8_t c1 = (uint8_t)((x + PLANE_W - 1) >> 3);
+        uint8_t c;
+        for (c = c0; c <= c1; c++) {
+            if (celda_en_tierra(cinta_row, c)) return 1;
+        }
+    }
     return 0;
 }
 
@@ -1842,10 +1887,25 @@ static void check_plane_collisions(void) {
      * por frame, coste despreciable. Se miran las TRES filas de cinta que ocupa
      * el sprite (arriba, centro y abajo); con un sprite de 16 px el borde del
      * canal puede cambiar a mitad del avion. */
-    last_bank = (uint8_t)(plane_on_bank(plane_x, plane_y) ||
-                          plane_on_bank(plane_x, (uint8_t)(plane_y + 8)) ||
-                          plane_on_bank(plane_x,
-                                        (uint8_t)(plane_y + PLANE_H - 1)));
+    /* Se miran TODAS las filas de cinta que ocupa el sprite (16 px = 3 filas),
+     * no solo arriba/centro/abajo: con 1 px de scroll por frame la orilla entra
+     * por una fila intermedia y el avion se metia medio sprite en la arena sin
+     * que saltara la colision. */
+    {
+        /* Las TRES filas de cinta que ocupa un sprite de 16 px, cada una por su
+         * banda: 0-7, 8-15 y 16-23 desde plane_y. Mirar solo y, y+7, y+8 y
+         * y+15 dejaba la fila INTERMEDIA (y+8..y+15) sin cubrir cuando el
+         * sprite empezaba en mitad de una celda: el avion se metia en la orilla
+         * por la fila de en medio sin que saltara la colision. */
+        uint8_t k;
+        last_bank = 0;
+        for (k = 0; k < PLANE_H; k++) {
+            if (plane_on_bank(plane_x, (uint8_t)(plane_y + k))) {
+                last_bank = 1;
+                break;
+            }
+        }
+    }
     if (last_bank) {
         plane_hit();
         return;
@@ -1920,77 +1980,72 @@ static void check_plane_collisions(void) {
 static void update_boat(void) {
     if (boat_active) {
         boat_y = (uint8_t)(boat_y + scroll_step);
+        if (boat_y >= VC_SCREEN_H) { boat_active = 0; return; }
 
-        /* Los limites laterales se recalculan CADA FRAME con el perfil del cauce
-         * de la fila en la que esta el enemigo: el rio cambia de ancho y si se
-         * quedan fijos, el barco acaba navegando sobre el cesped o dentro de la
-         * isla. Si el cauce se cierra a su lado, el enemigo empuja de vuelta al
-         * agua. */
-        {
-            uint8_t row;
-            uint8_t r_izq, r_der;
+        /* Los dos bordes del sprite (16 px = 2 celdas) tienen que caer en agua.
+         * Se pregunta CELDA A CELDA con celda_agua(), la misma que usa el
+         * avion: asi el enemigo rebota en la orilla, en la isla y en la viga del
+         * puente sin listas de limites que se desincronicen del rio. */
 
-            if (boat_y >= VC_SCREEN_H) { boat_active = 0; return; }
-            row = FILA_CINTA(boat_y);
-            r_izq = (uint8_t)((river_l[row] + 1) * 8);        /* agua interior */
-            r_der = (uint8_t)((river_r[row] - 1) * 8);        /* 8 px antes de la orilla */
-
-            /* Con isla central, el barco se queda en el brazo donde esta. */
-            if (island_l[row] != 0xFF) {
-                if (boat_x + 8 <= (uint8_t)(island_l[row] * 8)) {
-                    r_der = (uint8_t)(island_l[row] * 8 - 16);
-                } else {
-                    r_izq = (uint8_t)((island_r[row] + 1) * 8);
+        /* Si se quedo encerrado (el cauce se cerro a su lado), se empuja al
+         * agua mas cercana para que no rebote contra la nada. */
+        if (!sprite_cabe(boat_x, boat_y)) {
+            uint8_t k;
+            for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
+                if (sprite_cabe((uint16_t)(k * 8), boat_y)) {
+                    boat_x = (uint8_t)(k * 8);
+                    break;
                 }
             }
-            boat_xmin = r_izq;
-            boat_xmax = (uint8_t)((r_der > r_izq) ? r_der : r_izq);
         }
 
-        /* Deriva lateral con rebote, 1 px cada pocos frames. El HELICOPTERO
-         * tambien queda sujeto al cauce: en el arcade los helicopteros vuelan
-         * por el agua, no por el cesped. */
+        /* Deriva lateral con rebote: 1 px cada pocos frames. El HELICOPTERO
+         * tambien queda sujeto al cauce; en el arcade vuela sobre el agua. */
         if (++boat_drift >= (boat_is_heli ? 2 : 4)) {
+            uint8_t nx;
             boat_drift = 0;
-            if (boat_dir == 0) {
-                boat_x++;
-                if (boat_x >= boat_xmax) boat_dir = 1;
+            nx = (uint8_t)((boat_dir == 0) ? boat_x + 1 : boat_x - 1);
+
+            /* Rebota si el sprite se sale del agua por cualquier lado. */
+            if (!sprite_cabe(nx, boat_y)) {
+                boat_dir = (uint8_t)!boat_dir;
             } else {
-                boat_x--;
-                if (boat_x <= boat_xmin) boat_dir = 0;
+                boat_x = nx;
             }
         }
-        if (boat_x < boat_xmin) boat_x = boat_xmin;
-        if (boat_x > boat_xmax) boat_x = boat_xmax;
         return;
     }
 
     if (world_row >= boat_next) {
-        /* Nace SIEMPRE dentro del cauce de la fila por la que entra: el perfil
-         * es variable, asi que se usa el de esa fila y se evita la isla. */
+        /* Nace SIEMPRE en agua navegable de la fila por la que entra. */
         uint8_t r0 = FILA_CINTA(0);
-        uint8_t l  = (uint8_t)(river_l[r0] + 1);
-        uint8_t r  = (uint8_t)(river_r[r0] - 1);
-        uint8_t col;
+        uint8_t cols = 0;
+        uint8_t k;
 
         boat_is_heli = (uint8_t)(rng_next() & 1);   /* mitad barcos, mitad helis */
 
-        if (island_l[r0] != 0xFF) {
-            /* Elige el brazo mas ancho para que quepa. */
-            if ((island_l[r0] - l) < (r - island_r[r0])) l = (uint8_t)(island_r[r0] + 1);
-            else                                        r = (uint8_t)(island_l[r0] - 1);
+        /* Cuenta las celdas validas y elige una al azar: no hay brazo "mejor",
+         * basta con que quepa el sprite (2 celdas). */
+        for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
+            if (sprite_cabe((uint16_t)(k * 8), 0)) cols++;
         }
-        if (r <= l) r = (uint8_t)(l + 1);
+        if (cols == 0) { boat_next = world_row + 4; return; }
 
-        col = (uint8_t)(l + (rng_next() % (uint8_t)(r - l)));
-        boat_x = (uint8_t)(col * 8);
-        boat_xmin = (uint8_t)(l * 8);
-        boat_xmax = (uint8_t)(r * 8);
+        {
+            uint8_t pick = (uint8_t)(rng_next() % cols);
+            for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
+                if (sprite_cabe((uint16_t)(k * 8), 0)) {
+                    if (pick == 0) break;
+                    pick--;
+                }
+            }
+        }
+        boat_x = (uint8_t)(k * 8);
         boat_dir = (uint8_t)(rng_next() & 1);
         boat_y = 0;
         boat_drift = 0;
         boat_active = 1;
-        boat_next = world_row + 16;   /* el siguiente, 16 filas despues */
+        boat_next = world_row + 16;
     }
 }
 
@@ -2002,26 +2057,38 @@ static void update_fuel(void) {
         fuel_y = (uint8_t)(fuel_y + scroll_step);
         if (fuel_y >= VC_SCREEN_H) {
             fuel_active = 0;
+            return;
+        }
+        /* Si la fila por la que pasa ya no es agua (el cauce se estrecho o
+         * empezo una isla), el bidon SE RETIRA: no se queda encima del cesped
+         * ni dentro de la tierra, donde seria un objeto imposible de coger. */
+        if (!sprite_cabe(fuel_x, fuel_y)) {
+            fuel_active = 0;
         }
         return;
     }
 
     if (world_row >= fuel_next) {
-        /* Aparece en el AGUA REAL de la fila superior (perfil variable), no en
-         * columnas fijas: si no, caeria sobre el cesped o dentro de un islote
-         * y seria imposible recogerlo. */
+        /* Aparece en AGUA navegable de la fila por la que entra. */
         uint8_t r0 = FILA_CINTA(0);
-        uint8_t l  = (uint8_t)(river_l[r0] + 1);
-        uint8_t r  = (uint8_t)(river_r[r0] - 1);
-        uint8_t col;
-        /* Elige una columna de agua que NO este ocupada por la isla central. */
-        for (;;) {
-            col = (uint8_t)(l + (rng_next() % (uint8_t)((r > l + 1) ? (r - l) : 1)));
-            if (island_l[r0] == 0xFF || col < island_l[r0] || col > island_r[r0]) break;
-            l = (uint8_t)(island_r[r0] + 1);
-            if (l >= r) { col = (uint8_t)(river_l[r0] + 1); break; }
+        uint8_t cols = 0;
+        uint8_t k;
+
+        for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
+            if (sprite_cabe((uint16_t)(k * 8), 0)) cols++;
         }
-        fuel_x = (uint8_t)(col * 8);
+        if (cols == 0) { fuel_next = world_row + 4; return; }
+
+        {
+            uint8_t pick = (uint8_t)(rng_next() % cols);
+            for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
+                if (sprite_cabe((uint16_t)(k * 8), 0)) {
+                    if (pick == 0) break;
+                    pick--;
+                }
+            }
+        }
+        fuel_x = (uint8_t)(k * 8);
         fuel_y = 0;
         fuel_active = 1;
         fuel_next = world_row + 30;
@@ -2139,16 +2206,23 @@ static void update_water_anim_old(void) {
  * es el de la fila que entra en el SIGUIENTE paso de scroll (fila_visible + 2),
  * que solo puede verse dentro de 30 filas: la sustituta no asoma nunca.
  * =========================================================================== */
-static void advance_scroll(void) {
-    /* Acumula la velocidad (con fraccion) y avanza los pasos enteros. */
-    {
-        uint8_t spd = scroll_speed;
-        if (spd == 0) spd = SCROLL_NORM;
-        scroll_acc = (uint8_t)(scroll_acc + spd);
-        scroll_step = (uint8_t)(scroll_acc >> 3);
-        scroll_acc = (uint8_t)(scroll_acc & 0x07);
-    }
+/* Calcula cuantos px se mueve el mundo ESTE frame.
+ *
+ * Va aparte y al PRINCIPIO del frame a proposito: barco, bidon y explosion se
+ * desplazan con scroll_step, y tienen que usar el mismo valor con el que luego
+ * se mueve el rio. Si se calcula dentro de advance_scroll() (al final del
+ * frame), esos objetos se movian con el paso del frame ANTERIOR y quedaban
+ * desfasados una fila respecto al agua: aparecian sobre la orilla.
+ * advance_scroll() usa el valor ya calculado y no lo recalcula. */
+static void step_scroll(void) {
+    uint8_t spd = scroll_speed;
+    if (spd == 0) spd = SCROLL_NORM;
+    scroll_acc = (uint8_t)(scroll_acc + spd);
+    scroll_step = (uint8_t)(scroll_acc >> 3);
+    scroll_acc = (uint8_t)(scroll_acc & 0x07);
+}
 
+static void advance_scroll(void) {
     /* Fila (y px) que se veran en el borde superior DESPUES del paso.
      * La fila se deriva de un total, no de un contador aparte: asi no puede
      * desfasarse del scroll. */
@@ -2372,6 +2446,22 @@ int main(void) {
             read_input();
         }
 
+        /* 1b) EL RIO SE MUEVE PRIMERO.
+         *
+         * Antes el scroll se aplicaba al final del frame, despues de dibujar
+         * los sprites: el barco se colocaba contra el perfil de una fila que en
+         * pantalla ya no era la suya, y quedaba medio sprite sobre la orilla un
+         * frame (y al frame siguiente el rio volvia a moverse debajo). Moverlo
+         * aqui deja los dos en el mismo instante: lo que consulta la colision
+         * es exactamente lo que se ve.
+         *
+         * Va antes de los sprites porque la regeneracion de la fila de cinta es
+         * la parte mas pesada del frame. */
+        if (!game_over) {
+            step_scroll();
+            advance_scroll();
+        }
+
         /* 2) Logica: balas, colisiones, barco, combustible. */
         if (!game_over) {
             update_bullets();
@@ -2407,6 +2497,7 @@ int main(void) {
         if (!game_over) {
             hud_draw();
         }
+
         perf_mark(1);
 
         /* 5) Sonido. */
@@ -2416,8 +2507,7 @@ int main(void) {
         if (game_over) {
             game_over_screen();
         } else {
-            /* Segundo: scroll + regeneracion (mas pesado). */
-            advance_scroll();
+            /* El scroll ya se aplico en 1b. */
             update_water_anim();
         }
         perf_mark(2);
