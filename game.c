@@ -730,6 +730,11 @@ static void hud_draw(void) {
 #define GEN_ARM_MIN    5      /* ancho MINIMO de cada brazo (tramo duro)  */
 #define GEN_ARM_EASY   7      /* ancho de cada brazo en el primer tramo    */
 #define GEN_ISLAND_W   9      /* isla visible = 9 columnas de tierra      */
+/* ISLA MINIMA: por debajo de esto la tierra central NO se pinta ni cuenta para
+ * la colision. Una isla de 1-2 celdas es una tira de arena de 8-16 px que
+ * aparece y desaparece con el scroll y mata sin que se vea: el jugador lo vive
+ * como "choque con algo invisible". 3 celdas es el minimo legible. */
+#define ISLE_MIN_COLS  3
 /* Con isla el cauce se abre a GEN_SPLIT_W: el rio se ensancha para que quepan
  * la tierra central y los dos brazos MAS ANCHOS (los del arranque). */
 #define GEN_SPLIT_W    (GEN_ISLAND_W + 2 * GEN_ARM_EASY)  /* 23 */
@@ -1089,7 +1094,7 @@ static uint8_t generate_world_row(uint32_t n) {
      * unas filas, o sea un estrechamiento feo pegado al ensanche. Se recuerda
      * el ancho de la ultima fila CON isla y, mientras la curva lo pida, no se
      * baja de ahi. */
-    if (gen_split_w) {
+    if (gen_split_w >= ISLE_MIN_COLS) {
         gen_w_tras_isla = (uint8_t)(gen_right - gen_left + 1);
     }
     gen_half = (uint8_t)((gen_right - gen_left + 1) / 2);
@@ -1109,7 +1114,7 @@ static uint8_t generate_world_row(uint32_t n) {
         uint8_t l = gen_left, r = gen_right;
         uint8_t w = (uint8_t)(r - l + 1);
 
-        if (gen_split_w) {
+        if (gen_split_w >= ISLE_MIN_COLS) {
             /* Al empezar la isla el cauce se abre DE GOLPE hasta el ancho que
              * necesita (isla + dos brazos). Interpolar no vale: la isla dura
              * pocas filas y el borde solo avanza 1 celda por fila, asi que el
@@ -1143,8 +1148,10 @@ static uint8_t generate_world_row(uint32_t n) {
              * celdas CON la isla aun dentro (medido: 5, 6, 8... en el tramo 1,
              * donde el minimo es 7). Aqui no se abre de golpe: solo se pone
              * el suelo que la tierra necesita. */
-            uint8_t need = (uint8_t)(gen_split_w + 2 * gen_arm_now() + 2);
-            if (w < need) w = need;
+            if (gen_split_w >= ISLE_MIN_COLS) {
+                uint8_t need = (uint8_t)(gen_split_w + 2 * gen_arm_now() + 2);
+                if (w < need) w = need;
+            }
         }
         /* El ancho ya paso el bache: se suelta la referencia. */
         if (!gen_split_w && gen_w_tras_isla && w >= gen_w_tras_isla) {
@@ -1176,8 +1183,13 @@ static uint8_t generate_world_row(uint32_t n) {
          * manda; el ensanche solo afecta a esta fila. */
     }
 
-    /* Tierra central que parte el cauce (no es una entidad: es terreno). */
-    if (gen_split_w) {
+    /* Tierra central que parte el cauce (no es una entidad: es terreno).
+     *
+     * Hace falta un MINIMO antes de que cuente como isla: una isla de 1-2
+     * celdas es una franja de arena de 8-16 px que aparece pegada a la orilla
+     * segun el scroll y mata sin que el jugador vea nada ("choque invisible").
+     * Con ISLE_MIN_COLS la tierra no aparece hasta tener cuerpo. */
+    if (gen_split_w >= ISLE_MIN_COLS) {
         /* La isla crece de 1 a GEN_ISLAND_W columnas VISIBLES (9). gen_split_w
          * guarda ese ancho en curso, no un semiancho: asi los pasos son 1..9 y
          * el estado estable es exactamente 9 columnas de tierra. Se deja una
