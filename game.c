@@ -126,13 +126,16 @@ static uint8_t  scroll_step;
  * quedaba medio fuera de pantalla. Aqui sobra 2 px de margen por arriba. */
 #define HUD_Y          10      /* Y de la fila de HUD (px). Ocupa 10..17 */
 #define HUD_SCORE_X    24      /* puntos (4 digitos x 8 px)          */
+/* HUD_SCALE = 0: los sprites del HUD son de 8x8, NO de 16x16. Por eso cada
+ * pieza de la barra ocupa 8 px y el paso HUD_FUEL_STEP es mayor que 8: deja
+ * un hueco entre piezas en vez de solaparlas. */
 #define HUD_FUEL_X     120     /* barra de combustible               */
 #define HUD_FUEL_W     8       /* nº de celdas de la barra (8x8 px)  */
-/* Avance de la celda de la barra de combustible: 14 px. Las celdas del HUD se
- * pintan a escala 2 (16 px), asi que avanzar 14 px las solapa y la barra se ve
- * continua en vez de con huecos. HUD_FUEL_STEP va en unidades de HUD_SCALE. */
-#define HUD_FUEL_STEP  14
-#define HUD_LIVES_X    208     /* contador de vidas                  */
+#define HUD_FUEL_STEP  12      /* 8 px de pieza + 4 px de hueco      */
+/* VIDAS a la derecha de la barra: 120 + 7*12 + 8 = 212 es el borde derecho
+ * de la barra, asi que 216 deja 4 px de separacion. Antes estaba en 208 y el
+ * icono de vidas se pintaba ENCIMA de las dos ultimas celdas de la barra. */
+#define HUD_LIVES_X    216     /* icono de vida + numero de vidas    */
 
 /* Patrones de sprite del HUD. */
 #define HUD_PAT_DIGIT0 42       /* 10 digitos = 42..51                */
@@ -209,6 +212,15 @@ static uint8_t  scroll_step;
 #define SPR_HELI_PAT   9
 #define SPR_BULLET     30    /* 30 y 31 (pool de 2 balas), libre de HUD */
 #define SPR_BULLET_PAT 14
+/* Desfase entre el ORIGEN del sprite de la bala y su dibujo: el patron ocupa
+ * las columnas 3 y 4, asi que el dibujo empieza en bullet_x + BULLET_OFF_X y
+ * mide 2 px. Cualquier colision tiene que usar BULLET_HIT_X(), no bullet_x
+ * directo: antes se comprobaba desde bullet_x y la caja salia 3 px a la
+ * izquierda del dibujo. */
+#define BULLET_OFF_X   3
+#define BULLET_W       2
+#define BULLET_H       6
+#define BULLET_HIT_X(i) ((uint16_t)(bullet_x[i] + BULLET_OFF_X))
 #define SPR_BOOM       5
 #define SPR_BOOM_PAT   10     /* 10 y 11 = 2 frames de explosion    */
 
@@ -243,12 +255,26 @@ static uint8_t  scroll_step;
  * =========================================================================== */
 static uint16_t rng_state;
 
+/* DIAGNOSTICO: causa de la ultima muerte del avion.
+ *   0 = sin morir, 1 = orilla/isla/viga, 2 = enemigo, 3 = sin combustible
+ * Se guarda en direcciones FIJAS de la zero page ($03E0-$03E4, libres: el
+ * monitor usa $02-$1F y la libreria $20-$3A) para poder leerlas desde el
+ * emulador con /ram.bin. Las tres ultimas son el detalle del choque contra la
+ * orilla (fila de cinta, columna y los dos bordes del agua), que es lo que
+ * permite auditar si un choque fue justo: tools/auditar_choques.py. */
+#define DBG_MUERTE (*(volatile uint8_t *)0x03E0)
+#define DBG_FILA   (*(volatile uint8_t *)0x03E1)
+#define DBG_COL    (*(volatile uint8_t *)0x03E2)
+#define DBG_L      (*(volatile uint8_t *)0x03E3)
+#define DBG_R      (*(volatile uint8_t *)0x03E4)
+
 /* El avion se dibuja con su esquina superior en plane_y. Para que este CENTRADO
  * en las filas de cinta que ocupa, el centro (plane_y + PLANE_H/2) debe caer en
  * mitad de una fila de cinta (celda) => plane_y = 4 + 8k.
- * PLANE_Y es la posicion fija tras reaparecer; PLANE_ROW su fila de cinta. */
+ * PLANE_Y es la posicion fija tras reaparecer. OJO: NO se puede derivar de aqui
+ * una fila de cinta constante para consultar el perfil; la cinta gira con el
+ * scroll y hay que usar FILA_CINTA(plane_y + dy). */
 #define PLANE_Y    (4 + 8 * 22)          /* = 180: altura fija, abajo */
-#define PLANE_ROW  ((PLANE_Y + (PLANE_H / 2)) >> 3)
 
 static uint16_t plane_x;
 static uint8_t  plane_y;
@@ -312,17 +338,12 @@ static uint8_t   island_r[VC_MAP_ROWS];
  * RAM porque gen_bridge solo vale para la fila que se esta generando. */
 static uint8_t   puente_bit[VC_MAP_ROWS];
 
-/* MAPA DE BITS: 1 = la celda es cuadrante de isla (64x32 = 256 bytes).
- *
- * El core no deja leer la VRAM, y la animacion del agua necesita saber si una
- * celda es isla antes de repintarla: el perfil (island_l/r) cambia cuando la
- * fila se regenera, asi que no sirve como fuente de verdad. Un bit por celda
- * cabe de sobra en RAM. */
-static uint8_t   isla_bit[VC_MAP_ROWS][8];   /* 64 celdas = 8 bytes por fila */
-
-#define ISLA_SET(row, col)  (isla_bit[(row)][(col) >> 3] |= (uint8_t)(1u << ((col) & 7)))
-#define ISLA_CLR(row, col)  (isla_bit[(row)][(col) >> 3] &= (uint8_t)~(1u << ((col) & 7)))
-#define ISLA_GET(row, col)  ((isla_bit[(row)][(col) >> 3] >> ((col) & 7)) & 1)
+/* MARCA DE ISLA: vacia. Existio como mapa de bits (256 bytes) para que la
+ * animacion del oleaje no repintara tierra, pero esa animacion esta desactivada
+ * y nadie mas lo leia, asi que se quito para liberar RAM. Se dejan los macros
+ * como no-op para no tocar las llamadas que marcan celdas al pintar la fila. */
+#define ISLA_SET(row, col)  ((void)0)
+#define ISLA_CLR(row, col)  ((void)0)
 
 /* Deposito de combustible (sprite). */
 static uint8_t   fuel_active;
@@ -724,15 +745,20 @@ static void hud_draw(void) {
 #define GEN_SECTOR     16     /* bloques entre puentes (1 puente cada uno)*/
 #define GEN_AHEAD      2      /* filas de cinta fuera de la vista (ver
                                * advance_scroll): 32 de cinta - 30 visibles */
-#define GEN_W_MIN      7      /* ancho minimo del cauce en el primer tramo */
-#define GEN_W_HARD_MIN 5      /* ... y en el ultimo (dificultad maxima)    */
-#define GEN_W_MAX      20     /* ancho maximo sin isla (cabe en la cinta) */
+/* ANCHO: el usuario lo quiere ancho de verdad. El avion mide 16 px (2 celdas)
+ * y la orilla ocupa 1 celda mas a cada lado, asi que un cauce de 7 celdas deja
+ * solo 5 de agua = 40 px de recorrido lateral: el jugador lo vive como "choco
+ * con algo invisible" porque a un toque de la tecla ya toca la orilla. El
+ * minimo se sube para que quepan varias columnas de juego a cada lado. */
+#define GEN_W_MIN      9      /* ancho minimo del cauce en el primer tramo */
+#define GEN_W_HARD_MIN 7      /* ... y en el ultimo (dificultad maxima)    */
+#define GEN_W_MAX      22     /* ancho maximo sin isla (cabe en la cinta) */
 #define GEN_CURVE_MAX  3      /* desplazamiento maximo del centro         */
 /* ISLA: GEN_ISLAND_W es el HUECO central (suelo + las dos orillas), o sea las
  * columnas de tierra que se ven. Con 9 columnas y dos brazos de 5 el cauce se
  * abre a GEN_SPLIT_W = 19 celdas. */
-#define GEN_ARM_MIN    5      /* ancho MINIMO de cada brazo (tramo duro)  */
-#define GEN_ARM_EASY   7      /* ancho de cada brazo en el primer tramo    */
+#define GEN_ARM_MIN    6      /* ancho MINIMO de cada brazo (tramo duro)  */
+#define GEN_ARM_EASY   8      /* ancho de cada brazo en el primer tramo    */
 #define GEN_ISLAND_W   9      /* isla visible = 9 columnas de tierra      */
 /* ISLA MINIMA, en COLUMNAS VISIBLES (costa + cesped + costa).
  *
@@ -782,8 +808,6 @@ static void hud_draw(void) {
 
 static uint8_t  gen_seed_hi = 0xA8;   /* SEED_HI del original */
 static uint8_t  gen_seed_lo = 0x14;   /* SEED_LO del original */
-static uint8_t  gen_half;             /* semiancho del agua (sin tierra)   */
-static uint8_t  gen_total_half;       /* semiancho del cauce dibujado      */
 static uint8_t  gen_left;             /* borde izquierdo de agua (fila)   */
 static uint8_t  gen_right;            /* borde derecho de agua (fila)     */
 static uint8_t  gen_t_left;           /* objetivo del bloque en curso     */
@@ -795,7 +819,6 @@ static uint8_t  gen_split_w;          /* ancho ACTUAL de la isla (1..9)   */
  * curva pida menos, se mantiene este ancho. */
 static uint8_t  gen_w_tras_isla;
 static uint8_t  gen_split_target;     /* semiancho objetivo de la tierra  */
-static uint8_t  gen_entity;           /* entidad del bloque (bits 9-11)   */
 static uint8_t  gen_funnel;           /* 1 = bloque de embudo (pre-puente)*/
 static uint8_t  gen_bridge;           /* 1 = esta fila es del PUENTE      */
 static uint8_t  gen_block_row;        /* filas desde el ultimo bloque     */
@@ -840,7 +863,7 @@ static uint8_t gen_curve_toward(uint8_t cur, uint8_t target) {
  * TABLA: la escala lineal dejaba los estrechamientos casi sin usar y el cauce
  * pasaba casi siempre por los mismos dos anchos. */
 static const uint8_t gen_width_tab[16] = {
-    6, 7, 8, 9, 10, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+    9, 10, 11, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19, 20, 21, 22
 };
 
 static uint8_t gen_width_from(bits) {
@@ -894,7 +917,6 @@ static void gen_new_block(void) {
         gen_t_right = GEN_PIER_R;
         gen_split_on = 0;
         gen_split_target = 0;
-        gen_entity = 0;
         return;
     }
 
@@ -907,7 +929,6 @@ static void gen_new_block(void) {
         gen_t_right = GEN_PIER_R;
         gen_split_target = 0;
         gen_split_on = (uint8_t)(gen_split_w != 0);
-        gen_entity = 0;
         return;
     }
 
@@ -960,7 +981,6 @@ static void gen_new_block(void) {
     }
 
     /* --- Entidad del bloque: bits 9-11 (0 fuel, 1 barco, 2 heli, 3 jet...) - */
-    gen_entity = (uint8_t)((gen_seed_hi >> 1) & 0x07);
 }
 
 static void gen_save_checkpoint(void);
@@ -973,16 +993,13 @@ static void gen_save_checkpoint(void);
 static void gen_reset(void) {
     gen_seed_hi = 0xA8;
     gen_seed_lo = 0x14;
-    gen_left    = GEN_ZONE_L + 1;
-    gen_right   = GEN_ZONE_R - 1;
+    gen_left    = GEN_ZONE_L;
+    gen_right   = GEN_ZONE_R;
     gen_t_left  = gen_left;
     gen_t_right = gen_right;
-    gen_half    = (uint8_t)((gen_right - gen_left + 1) / 2);
-    gen_total_half = gen_half;
     gen_split_on = 0;
     gen_split_w = 0;
     gen_split_target = 0;
-    gen_entity  = 0;
     gen_funnel  = 0;
     gen_bridge  = 0;
     /* Se entra en el bloque 1 del tramo 1: el bloque 0 es el puente y al
@@ -1056,7 +1073,6 @@ static uint8_t generate_world_row(uint32_t n) {
     uint8_t wave = (uint8_t)((n & 1) ? TILE_WATER2 : TILE_WATER);
     uint8_t col;
     uint8_t il = 0xFF, ir = 0xFF;
-    uint8_t knee_l, knee_r;
 
     /* --- Bloque del LFSR ---
      * Cada GEN_BLOCK filas se precalcula el siguiente bloque (ancho, curva,
@@ -1096,6 +1112,36 @@ static uint8_t generate_world_row(uint32_t n) {
         gen_right = (uint8_t)(gen_left + 3);
     }
 
+    /* --- Tierra central: crece y se encoge 1 celda por fila ---
+     *
+     * La isla se decide ANTES de fijar los bordes, porque es ella la que dicta
+     * el ancho MINIMO del cauce: si se calcula despues hay que rehacer los
+     * bordes de golpe, y ese salto es justo lo que dejaba dos filas
+     * incompatibles pegadas (el sprite cabe en una y no en la de al lado, y el
+     * avion muere contra una "pared" que no se ve).
+     *
+     * ORDEN: PRIMERO se ensancha el cauce (1 celda por lado y fila) y SOLO
+     * cuando ya hay sitio la tierra empieza a crecer. Con el orden contrario la
+     * tierra pedia 9 columnas de golpe en una fila de 6 y el cauce saltaba de
+     * 19 a 23 celdas de una vez. */
+    {
+        uint8_t ancho = (uint8_t)(gen_right - gen_left + 1);
+        uint8_t goal  = (uint8_t)(gen_split_on ? gen_split_target : 0);
+
+        if (gen_split_w < goal) {
+            /* Solo crece si la tierra CABE: hace falta hueco para las dos
+             * costas de la isla MAS los dos brazos a su ancho actual. Con un
+             * margen fijo de 2 celdas (lo que habia antes) la isla crecia en un
+             * cauce de 14 con brazos de 5, que necesitan 21: el ensanche no
+             * llegaba nunca y los brazos quedaban en 2 celdas pintadas. */
+            if (ancho >= (uint8_t)(gen_split_w + 1 + 2 * gen_arm_now() + 2)) {
+                gen_split_w++;
+            }
+        } else if (gen_split_w > goal) {
+            gen_split_w--;
+        }
+    }
+
     /* EL CAUCE NO SE ESTRECHA JUSTO TRAS UNA ISLA: al desvanecerse la tierra
      * el cauce volvia al ancho del bloque (12 en el tramo 1) y se quedaba asi
      * unas filas, o sea un estrechamiento feo pegado al ensanche. Se recuerda
@@ -1104,85 +1150,68 @@ static uint8_t generate_world_row(uint32_t n) {
     if (gen_split_w >= ISLE_MIN_COLS) {
         gen_w_tras_isla = (uint8_t)(gen_right - gen_left + 1);
     }
-    gen_half = (uint8_t)((gen_right - gen_left + 1) / 2);
 
-    /* --- Tierra central: crece y se encoge 1 celda por fila --- */
-    {
-        uint8_t goal = (uint8_t)(gen_split_on ? gen_split_target : 0);
-        if (gen_split_w < goal) gen_split_w++;
-        else if (gen_split_w > goal) gen_split_w--;
-    }
     /* El cauce se reparte alrededor del CENTRO de la zona de agua.
      * Si en esta fila hay isla, el cauce se ENSANCHA para que quepan la
-     * tierra y los dos brazos (el original tambien abre el rio). Se recalcula
-     * DESPUES de saber si hay isla, que es lo que fallaba antes. */
+     * tierra y los dos brazos (el original tambien abre el rio). */
     {
         uint8_t center = (uint8_t)((GEN_ZONE_L + GEN_ZONE_R + 1) / 2);
         uint8_t l = gen_left, r = gen_right;
         uint8_t w = (uint8_t)(r - l + 1);
+        uint8_t suelo = gen_w_min_now();
 
         if (gen_split_w >= ISLE_MIN_COLS) {
-            /* Al empezar la isla el cauce se abre DE GOLPE hasta el ancho que
-             * necesita (isla + dos brazos). Interpolar no vale: la isla dura
-             * pocas filas y el borde solo avanza 1 celda por fila, asi que el
-             * ensanche no llegaba nunca y los brazos quedaban en 4. Al salir
-             * de la isla si se estrecha progresivamente.
-             * Los brazos son MAS ANCHOS al principio (7) y se van apretando
-             * hasta 5 con los puentes. OJO: el ancho con isla NO usa GEN_SPLIT_W
-             * fijo (23): si se usa, los brazos se quedan en 7 SIEMPRE y la
-             * progresion no se nota (medido con simular_cauce.py). */
             /* OJO con las DOS costas: gen_left..gen_right incluye la celda de
              * costa en cada extremo, y la isla tambien se lleva las suyas. El
              * agua navegable de cada brazo es (ancho - isla - 2 costas)/2, asi
              * que para pedir N celdas de brazo el ancho es
-             *     isla + 2*N + 2 costas
-             * (antes faltaban las 2 costas y los brazos salian 1 celda mas
-             * estrechos de lo pedido: 4 en vez de 5 en el tramo dificil). */
+             *     isla + 2*N + 2 costas */
             uint8_t need = (uint8_t)(gen_split_w + 2 * gen_arm_now() + 2);
-            w = need;
+            if (suelo < need) suelo = need;
+        }
+
+        /* SUELO del tramo (y de la isla si la hay) en TODAS las filas. El borde
+         * NO salta: si hay que ensanchar para que quepan los dos brazos, se
+         * abre 1 celda por fila y la isla no se dibuja hasta que cabe. Hacerlo
+         * de golpe dejaba dos filas incompatibles pegadas: el sprite de 16 px
+         * cabia en una y no en la vecina, y el avion moria contra una "pared"
+         * que el jugador no ve. */
+        if (w < suelo) {
+            uint8_t falta = (uint8_t)(suelo - w);
+            if (falta > 2) falta = 2;
+            w = (uint8_t)(w + falta);
+            l = (uint8_t)(center - (w / 2));
+            r = (uint8_t)(l + w - 1);
         } else if (w > GEN_W_MAX) {
-            /* Sin isla el cauce no puede ser tan ancho que parezca un mar. */
-            w = GEN_W_MAX;
-        } else if (gen_w_tras_isla && w < gen_w_tras_isla) {
+            /* Sin isla el cauce no puede ser tan ancho que parezca un mar.
+             * Se CIERRA 2 celdas por fila (1 por lado), no de golpe: un salto
+             * de 7 celdas entre dos filas deja al sprite con una fila en agua
+             * y la vecina en tierra. */
+            uint8_t sobra = (uint8_t)(w - GEN_W_MAX);
+            if (sobra > 2) sobra = 2;
+            w = (uint8_t)(w - sobra);
+            l = (uint8_t)(center - (w / 2));
+            r = (uint8_t)(l + w - 1);
+        } else if (gen_w_tras_isla && w < gen_w_tras_isla &&
+                   gen_split_w < ISLE_MIN_COLS) {
             /* Acaba de desaparecer una isla: no se encoge por debajo del ancho
              * que tenia con ella, para no dejar un bache justo despues. */
-            w = gen_w_tras_isla;
-        } else {
-            /* EL RESTO DE LA ISLA: hay tierra saliendo o entrando y el cauce
-             * ya no puede ser mas estrecho de lo que pide esa tierra. La
-             * curva del bloque se interpola 1 celda por fila y llega antes
-             * que el desvanecido de la isla: sin esto quedaban filas de 5
-             * celdas CON la isla aun dentro (medido: 5, 6, 8... en el tramo 1,
-             * donde el minimo es 7). Aqui no se abre de golpe: solo se pone
-             * el suelo que la tierra necesita. */
-            if (gen_split_w >= ISLE_MIN_COLS) {
-                uint8_t need = (uint8_t)(gen_split_w + 2 * gen_arm_now() + 2);
-                if (w < need) w = need;
-            }
+            w = (uint8_t)(w + 2);
+            if (w > gen_w_tras_isla) w = gen_w_tras_isla;
+            l = (uint8_t)(center - (w / 2));
+            r = (uint8_t)(l + w - 1);
         }
         /* El ancho ya paso el bache: se suelta la referencia. */
         if (!gen_split_w && gen_w_tras_isla && w >= gen_w_tras_isla) {
             gen_w_tras_isla = 0;
         }
 
-        /* OJO: se reconstruye por BORDES, no con semiancho. Con semiancho entero
-         * las anchuras impares perdian una celda (17 -> 16) y el ensanche para
-         * la isla no llegaba nunca a la pantalla. */
-        l = (uint8_t)(center - (w / 2));
-        r = (uint8_t)(l + w - 1);
+        /* Limites de la zona jugable (la cinta tiene 64 columnas, 40 visibles). */
+        if (l < GEN_ZONE_L) { l = GEN_ZONE_L; r = (uint8_t)(l + w - 1); }
+        if (r > GEN_ZONE_R) { r = GEN_ZONE_R; l = (uint8_t)(r - w + 1); }
 
-        /* Suelo del tramo en TODAS las filas: la curva interpola 1 celda por
-         * fila y el objetivo del bloque puede ser mas ancho que el minimo, asi
-         * que sin esto quedaban filas sueltas por debajo del minimo del tramo
-         * mientras el borde bajaba. */
-        if (w < gen_w_min_now()) {
-            l = (uint8_t)(center - (gen_w_min_now() / 2));
-            r = (uint8_t)(l + gen_w_min_now() - 1);
-            w = gen_w_min_now();
-        }
         gen_left  = l;
         gen_right = r;
-        gen_half  = (uint8_t)(w / 2);
         /* OJO: NO se tocan gen_t_left/gen_t_right aqui. Si se copian en cada
          * fila con isla, el objetivo del bloque queda machacado con el ancho
          * ensanchado y al salir de la isla el cauce se QUEDA en 19 para
@@ -1197,15 +1226,24 @@ static uint8_t generate_world_row(uint32_t n) {
      * segun el scroll y mata sin que el jugador vea nada ("choque invisible").
      * Con ISLE_MIN_COLS la tierra no aparece hasta tener cuerpo. */
     if (gen_split_w >= ISLE_MIN_COLS) {
-        /* La isla crece de 1 a GEN_ISLAND_W columnas VISIBLES (9). gen_split_w
-         * guarda ese ancho en curso, no un semiancho: asi los pasos son 1..9 y
-         * el estado estable es exactamente 9 columnas de tierra. Se deja una
-         * celda mas a la izquierda para que el cauce quede CENTRADO (con un
-         * ancho par el centro cae entre dos celdas). */
+        /* La isla NO se dibuja hasta que el cauce ya se ha ENSANCHADO lo
+         * suficiente para que quepan sus dos costas con al menos una celda de
+         * agua a cada lado. Si se dibuja antes, la tierra aparece pegada a la
+         * orilla justo en la fila en que el borde aun esta abriendose. */
         uint8_t w = gen_split_w;
+        uint8_t ancho = (uint8_t)(gen_right - gen_left + 1);
         if (w > GEN_ISLAND_W) w = GEN_ISLAND_W;
-        il = (uint8_t)(gen_left + (((gen_right - gen_left + 1) - w) / 2));
-        ir = (uint8_t)(il + w - 1);
+        if (ancho < (uint8_t)(w + 4)) {
+            /* Faltan brazos: esta fila es agua limpia y la isla sigue
+             * creciendo en las siguientes. */
+        } else {
+            /* La isla crece de 1 a GEN_ISLAND_W columnas VISIBLES (9).
+             * gen_split_w guarda ese ancho en curso, no un semiancho: asi los
+             * pasos son 1..9 y el estado estable es exactamente 9 columnas de
+             * tierra. */
+            il = (uint8_t)(gen_left + ((ancho - w) / 2));
+            ir = (uint8_t)(il + w - 1);
+        }
     }
 
     /* Guarda el perfil de esta fila ANTES de pintar. Es lo que consulta la
@@ -1215,7 +1253,6 @@ static uint8_t generate_world_row(uint32_t n) {
     river_r[cinta_row]  = gen_right;
     island_l[cinta_row] = il;
     island_r[cinta_row] = ir;
-    (void)knee_l; (void)knee_r;
 
     /* --- Pinta la fila en UNA sola pasada, con tile y atributo siempre ---
      *
@@ -1615,7 +1652,18 @@ static uint8_t fire_bullet(void) {
     }
     if (i == NBULLETS) return 0;   /* pool lleno */
 
-    bullet_x[i] = (uint16_t)(plane_x + (PLANE_W / 2) - 1);  /* centrada en el morro */
+    /* Centrada en el MORRO del avion.
+     *
+     * MEDIDO sobre los patrones (no a ojo):
+     *   - el avion se dibuja a escala 2x y su dibujo ocupa las columnas 0..6
+     *     del patron, o sea los pixeles plane_x+0 .. plane_x+13, con el centro
+     *     exacto en plane_x + 6,5;
+     *   - la bala NO va escalada y su dibujo ocupa las columnas 3 y 4, o sea
+     *     los pixeles bullet_x+3 y bullet_x+4, con el centro en bullet_x+3,5.
+     * Para que los dos centros coincidan: bullet_x = plane_x + 6,5 - 3,5, es
+     * decir plane_x + 3. Con el "- 1" de antes la bala salia 3 px a la derecha
+     * del morro, que es el desvio que se ve en pantalla. */
+    bullet_x[i] = (uint16_t)(plane_x + 3);
     bullet_y[i] = (uint8_t)(plane_y - 2);                   /* justo delante        */
     bullet_alive[i] = 1;
     fire_cooldown = FIRE_COOLDOWN;
@@ -1789,7 +1837,11 @@ static uint8_t plane_on_bank(uint16_t x, uint8_t y) {
         uint8_t c1 = (uint8_t)(x1 >> 3);
         uint8_t c;
         for (c = c0; c <= c1; c++) {
-            if (celda_en_tierra(cinta_row, c)) return 1;
+            if (celda_en_tierra(cinta_row, c)) {
+                DBG_FILA = cinta_row; DBG_COL = c;
+                DBG_L = river_l[cinta_row]; DBG_R = river_r[cinta_row];
+                return 1;
+            }
         }
     }
     return 0;
@@ -1827,41 +1879,63 @@ static void plane_hit(void) {
 
 /* Mueve el avion al centro-abajo del rio tras la muerte. Si no quedan vidas, se
  * marca game over. */
-/* Coloca el avion en un punto navegable de su fila: el centro del agua libre
- * (a izquierda o derecha de la isla central si la hay). */
+/* Coloca el avion en un punto donde el sprite entero quepa en agua.
+ *
+ * OJO CON LA FILA: antes se leia el perfil en la cinta PLANE_ROW, un valor
+ * CONSTANTE (23) que no tiene nada que ver con la cinta que se ve en la fila
+ * del avion. Como la cinta tiene 32 filas y el scroll la va rotando, la 23
+ * contiene un trozo ARBITRARIO del mapa: el avion se colocaba "en agua" segun
+ * esa fila y aparecia sobre la isla o contra la orilla. Moverse un pixel a un
+ * lado mataba al instante (el "choque con algo invisible" del arranque). Ahora
+ * se usa FILA_CINTA(plane_y), la misma cuenta que hace la colision. */
 static void plane_place_safe(void) {
-    /* Coloca el avion en el agua, CENTRADO en el hueco donde quepa ENTERO.
-     *
-     * OJO: no basta con centrarlo en el cauce o en un brazo. El sprite mide
-     * 16 px (2 celdas), asi que si nace en un cauce de 3 celdas con la orilla
-     * a un lado, medio sprite queda en tierra y la colision lo mata al
-     * instante: el jugador pulsa FIRE y el avion vuelve a morir, una y otra
-     * vez, sin poder jugar. Se busca una celda c que cumpla que caben c y c+1
-     * en agua de la MISMA fila de cinta. */
-    uint8_t row = PLANE_ROW;
-    uint8_t k;
+    uint8_t k, dy;
     uint8_t mejor = 0xFF;
     uint8_t mejor_dist = 0xFF;
     uint8_t centro = (uint8_t)((GEN_ZONE_L + GEN_ZONE_R + 1) / 2);
+    uint8_t fallo = 0xFF;
 
+    plane_y = PLANE_Y;
+
+    /* Un candidato es valido solo si TODAS las celdas del dibujo (las mismas
+     * que mira plane_on_bank, recortadas por PLANE_HIT_INSET) son agua en
+     * TODAS las filas de cinta que ocupa el sprite. Comprobar una sola fila
+     * deja el sprite a caballo de la orilla cuando la costa cambia de fila. */
     for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
+        uint16_t x = (uint16_t)((uint16_t)k * 8 + 8) - (PLANE_W / 2);
+        uint8_t cabe = 1;
         uint8_t dist;
-        if (!celda_agua(row, k) || !celda_agua(row, (uint8_t)(k + 1))) continue;
+
+        if (x < PLANE_MIN_X || x > PLANE_MAX_X) continue;
+        for (dy = PLANE_HIT_INSET; dy < PLANE_H - PLANE_HIT_INSET && cabe; dy++) {
+            uint8_t r = FILA_CINTA((uint8_t)(plane_y + dy));
+            uint8_t c0 = (uint8_t)((x + PLANE_HIT_INSET) >> 3);
+            uint8_t c1 = (uint8_t)((x + PLANE_W - PLANE_HIT_INSET - 1) >> 3);
+            uint8_t c;
+            for (c = c0; c <= c1; c++) {
+                if (!celda_agua(r, c)) { cabe = 0; break; }
+            }
+        }
+        if (!cabe) continue;
+        if (fallo == 0xFF) fallo = (uint8_t)k;
         dist = (uint8_t)((k > centro) ? (k - centro) : (centro - k));
-        if (dist < mejor_dist) { mejor_dist = dist; mejor = k; }
+        if (dist < mejor_dist) { mejor_dist = dist; mejor = (uint8_t)k; }
     }
 
     if (mejor != 0xFF) {
-        /* Centro del hueco de 2 celdas. */
         plane_x = (uint16_t)((uint16_t)mejor * 8 + 8) - (PLANE_W / 2);
+    } else if (fallo != 0xFF) {
+        plane_x = (uint16_t)((uint16_t)fallo * 8 + 8) - (PLANE_W / 2);
     } else {
-        /* Sin hueco de 2 celdas (cauce de 1 celda): se pone donde haya agua,
-         * aunque roce; es mejor que dejarlo clavado muriendo. */
+        /* Nada cabe (embudo junto al puente): al centro del agua de la fila
+         * central. Es preferible a dejarlo clavado contra la orilla. */
         for (k = GEN_ZONE_L; k <= GEN_ZONE_R; k++) {
-            if (celda_agua(row, k)) { plane_x = (uint16_t)(k * 8) - 4; break; }
+            if (celda_agua(FILA_CINTA(plane_y), k)) {
+                plane_x = (uint16_t)(k * 8) - 4;
+                break;
+            }
         }
     }
-    plane_y = PLANE_Y;
 
     /* Limites de pantalla: nunca fuera del rango visible. */
     if (plane_x < PLANE_MIN_X) plane_x = PLANE_MIN_X;
@@ -1883,7 +1957,7 @@ static void check_bullet_collisions(void) {
 
         /* Bala <-> barco (caja AABB). */
         if (boat_active) {
-            if (fv_box_toca(bullet_x[i], bullet_y[i], 2, 6,
+            if (fv_box_toca(BULLET_HIT_X(i), bullet_y[i], BULLET_W, BULLET_H,
                          boat_x, boat_y, 16, 16)) {
                 bullet_alive[i] = 0;
                 boat_active = 0;    /* destruye el barco */
@@ -1899,8 +1973,8 @@ static void check_bullet_collisions(void) {
 
         /* Bala <-> orilla (por X; la bala viaja en linea recta asi que si su X
          * cae fuera del canal, la apagamos). */
-        if (bullet_x[i] < PLANE_MIN_X ||
-            (bullet_x[i] + 1) >= ((RIVER_RIGHT + 1) * 8)) {
+        if (BULLET_HIT_X(i) < PLANE_MIN_X ||
+            (BULLET_HIT_X(i) + BULLET_W - 1) >= ((RIVER_RIGHT + 1) * 8)) {
             bullet_alive[i] = 0;
             continue;
         }
@@ -1947,6 +2021,7 @@ static void check_plane_collisions(void) {
         }
     }
     if (last_bank) {
+        DBG_MUERTE = 1;
         plane_hit();
         return;
     }
@@ -1959,6 +2034,7 @@ static void check_plane_collisions(void) {
         if (fv_box_toca(plane_x, plane_y, PLANE_W, PLANE_H,
                      boat_x, boat_y, 16, 16)) {
             boat_active = 0;   /* choque destruye ambos */
+            DBG_MUERTE = 2;
             plane_hit();
             return;
         }
@@ -2185,6 +2261,7 @@ static void update_fuel_gauge(void) {
 
     if (fuel == 0 && !plane_dead) {
         /* Sin combustible: muere el avion (pierde una vida). */
+        DBG_MUERTE = 3;
         plane_hit();
     }
 }
