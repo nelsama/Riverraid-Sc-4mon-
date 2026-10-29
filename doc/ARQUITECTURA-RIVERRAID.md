@@ -14,6 +14,46 @@ Documento de diseño con las decisiones fijadas para el clon de **River Raid**
 
 ---
 
+## 0. Presupuesto de memoria (leer antes de añadir código)
+
+El programa vive en **`$0800-$3DFF` = 13.824 bytes** y el enlace **falla en cuanto
+se pasa un byte**. No hay overlay ni paginación: lo que no cabe, no existe.
+
+| Estado | Bytes | Libre |
+|---|---|---|
+| Con `lib/vc.lib` + `sound.c` | 13.129 | 695 |
+| **Actual: drivers en línea** | **12.238** | **1.061** (BSS acaba en `$39DA`) |
+
+**Decisión tomada:** el juego **NO enlaza `lib/vc.lib` ni `sound.c`**. Solo usa un
+puñado de operaciones triviales sobre el puerto indirecto, así que viven en dos
+headers del proyecto con funciones `static` (el compilador no genera llamadas y
+el linker no arrastra las ~30 rutinas de la librería ni sus ayudantes):
+
+| Header | Contenido |
+|---|---|
+| `include/fastvideo.h` | escritura VRAM/OAM, scroll, raster, paletas, vblank, cajas AABB |
+| `include/fastsound.h` | driver del SID (antes `sound.c`) |
+
+`video.h` se sigue usando para los **nombres** de los registros y las constantes
+(`VC_AREA_*`, `VC_BGMAP_*`, `VC_SPR_*`…), pero **ninguna función `vc_*` se llama**.
+
+> ⚠️ Si vuelves a llamar a una función `vc_*`, el linker te devuelve sus bytes y
+> los ayudantes (`pushax`, `incsp2`…) al binario. Es legal, pero mira el tamaño.
+
+> 🪤 **Trampa que costó tiempo:** el puerto de memoria **NO auto-incrementa** (el de
+> paleta sí). Ver `TIPS-Y-TRAMPA` §3.6.
+
+**Cómo se mide el margen** (el `.map` no se regenera si el enlace falla):
+
+```bash
+make CC65_HOME=D:/cc65
+sed -n '/Segment list/,/Exports list by name/p' output/game.map
+```
+
+La línea `BSS` termina en **`003DFF`** cuando está a tope.
+
+---
+
 ## 1. Resumen del juego y su novedad técnica
 
 River Raid es un *shoot'em up* de **scroll vertical continuo**: el avión del
@@ -150,11 +190,42 @@ de  combustible o puente (con su tanque).
 - Con **semilla fija**, la disposición del río es **idéntica cada partida**
   (reproducible); para variar entre partidas se puede sembrar con `snd_random()`
   + `rom_get_micros()`.
-- El jugador solo ve la ventana de 30 filas; el resto se descarta.
 
-> **Nota:** el patrón `snd_random()` (SID `$D41B` en modo ruido silencioso) ya
-> está en `sound.c`/`sound.h` de la base. Para el LFSR de terreno se usa **semilla
-> determinista o no determinista** según se quiera partida reproducible o no.
+#### Reparto de bits (único que da CURVA)
+
+| Bits | Decide |
+|---|---|
+| 0-3 | **ancho** del cauce (`gen_width_tab`: 6…20 celdas) |
+| 4-6 | **curva**: desplaza el centro a izquierda/derecha |
+| 7-8 | **isla** central |
+| 9-11 | **entidad** (barco / helicóptero / bidón) |
+
+#### Sectores: el puente cierra el nivel
+
+Cada **16 bloques** de `GEN_BLOCK` filas hay un **puente**:
+
+| Bloques | Qué pasa |
+|---|---|
+| 0-13 | cauce normal (ancho, curva, isla, entidad) |
+| 14-15 | **embudo**: converge a `GEN_PIER_L..R` (12..27) y no genera islas |
+| 16 | **PUENTE** |
+
+El embudo existe para que el puente **siempre** caiga sobre un cauce centrado y
+del ancho conocido: si no, la viga taparía media pantalla.
+
+**El puente tiene un hueco** (`BRIDGE_GAP_L/R` = 19..20, el centro de la viga). La
+viga es `TILE_BRIDGE` en `gen_left..gen_right` **salvo** el hueco; tocarla mata.
+`gen_bridge` solo describe la fila que se está generando, así que la colisión lee
+`puente_bit[]`, una tabla de 32 bytes con el estado de cada fila de cinta.
+
+Al cruzar un puente se guarda el **checkpoint** (semilla y bloque del LFSR): al
+morir se restaura y el tramo se repite.
+
+El jugador solo ve la ventana de 30 filas; el resto se descarta.
+
+> **Nota:** el patrón `snd_random()` (SID `$D41B` en modo ruido silencioso) está
+> en `include/fastsound.h`. Para el LFSR de terreno se usa **semilla determinista
+> o no determinista** según se quiera partida reproducible o no.
 
 ---
 

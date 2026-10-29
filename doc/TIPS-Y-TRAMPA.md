@@ -187,6 +187,46 @@ hardware ignoraba el tile). Se corrigió en la librería.
 > tu código/librería escribe X bien. Un byte mal pasado puede parecer un bug de HW.
 > Mantén la librería actualizada y prueba casos simples de forma aislada.
 
+### 3.6 El puerto de memoria NO auto-incrementa (pero el de paleta SÍ)
+**Síntoma:** el juego corre entero —scroll, colisiones, sonido, HUD lógico— pero
+**no se ve ningún sprite**. `sprites activos: 0 de 32` y los campos del OAM llenos
+de basura (`Y >= 248` = deshabilitado).
+
+**Causa:** escribir varios `VID_DATA` seguidos creyendo que el puerto avanza.
+Solo entra el **primero**; los demás van a la misma dirección o se pierden.
+
+```c
+/* MAL: solo el primer byte llega a su sitio */
+VID_ADDR_LO = ...; VID_ADDR_HI = VC_AREA_OAM;
+VID_DATA = x; VID_DATA = y; VID_DATA = tile; VID_DATA = flags;
+```
+
+**El core tiene DOS puertos indirectos y se comportan distinto:**
+
+| Puerto | Registros | ¿Auto-incrementa? |
+|---|---|---|
+| **Memoria** (tilemap, atributos, patrones, OAM) | `$D800` `$D801` `$D802` | **NO.** Reescribe `$D800/$D801` antes de **cada** `$D802` |
+| **Paleta** | `$D813` `$D814` `$D815` | **SÍ**, al escribir `$D815`. Satura en 31 |
+
+De ahí viene la confusión: la documentación del core habla de "auto-incremento"
+en §4.4 (paletas) y de "**NO** auto-incrementa" en §9.6 y §12.1 (memoria).
+
+**Solución:**
+
+```c
+#define VC_WRITE(area, addr, data) do {          \
+    VID_ADDR_LO = (uint8_t)(addr);               \
+    VID_ADDR_HI = (uint8_t)((area)) | (uint8_t)(((addr) >> 8) & 0x07); \
+    VID_DATA    = (data);                        \
+} while (0)
+```
+
+Es exactamente lo que hace `VC_WRITE` de `video.h`. Si escribes el puerto a mano
+(lo normal en un bucle caliente), **repite la dirección en cada byte**.
+
+> **Cuesta 3 stores por byte**, tardarás lo mismo que con la librería: el puerto
+> ya es secuencial de por sí. No hay atajo de hardware que recuperar.
+
 ---
 
 ## 4. Entrada y HUD / texto

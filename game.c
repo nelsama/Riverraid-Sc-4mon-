@@ -303,6 +303,10 @@ static uint8_t   river_r[VC_MAP_ROWS];
 static uint8_t   island_l[VC_MAP_ROWS];
 static uint8_t   island_r[VC_MAP_ROWS];
 
+/* PUENTE: 1 si la fila de cinta es la viga (mata salvo el hueco). Se lleva en
+ * RAM porque gen_bridge solo vale para la fila que se esta generando. */
+static uint8_t   puente_bit[VC_MAP_ROWS];
+
 /* MAPA DE BITS: 1 = la celda es cuadrante de isla (64x32 = 256 bytes).
  *
  * El core no deja leer la VRAM, y la animacion del agua necesita saber si una
@@ -731,6 +735,10 @@ static void hud_draw(void) {
 #define GEN_PIER_L     12     /* borde izquierdo del cauce en el puente   */
 #define GEN_PIER_R     27     /* borde derecho (= 12..27 con orillas)     */
 #define GEN_FUNNEL_BLK 14     /* primer bloque de embudo (14 y 15)        */
+/* HUECO DEL PUENTE: dos celdas de agua en el centro de la viga. GEN_PIER_L..R
+ * es 12..27, o sea centro 19/20. El avion (16 px = 2 celdas) cabe justo. */
+#define BRIDGE_GAP_L   19
+#define BRIDGE_GAP_R   20
 
 /* Limites de la zona de agua dentro de la cinta (deja cesped a los lados). */
 #define GEN_ZONE_L     7      /* primera columna jugable                  */
@@ -983,6 +991,7 @@ static uint8_t generate_world_row(uint32_t n) {
     if (++gen_block_row >= GEN_BLOCK) gen_block_row = 0;
 
     /* Cruzar el puente = nuevo checkpoint. Solo cuenta una vez por puente. */
+    puente_bit[cinta_row] = gen_bridge;
     if (!gen_bridge) {
         if (gen_crossed) {
             gen_save_checkpoint();
@@ -1121,14 +1130,15 @@ static uint8_t generate_world_row(uint32_t n) {
                 tile = wave;                             attr = PAL_WATER;
             }
 
-            /* --- MARCA DE PUENTE (provisional) ---
-             * El puente cierra el sector: es la "linea de nivel". Todavia no
-             * hay tiles de puente ni colision, asi que se marca con las celdas
-             * de orilla (arena) a lo ancho del CAUCE. OJO: solo de gen_left a
-             * gen_right; si se pinta toda la cinta invade el cesped de los lados
-             * (bug visto en captura). Cuando exista el puente de verdad, estas
-             * filas pasan a ser sus tiles y el avion no podra atravesarlas. */
-            if (gen_bridge && col >= gen_left && col <= gen_right) {
+            /* --- PUENTE: viga maciza con un HUECO en el centro ---
+             * La viga cruza todo el cauce (gen_left..gen_right) salvo las dos
+             * celdas del hueco, que es por donde se pasa. Antes se tapaba el
+             * cauce ENTERO y el avion volaba sobre la viga: no habia puente que
+             * cruzar, solo una franja de arena. El hueco esta en el centro del
+             * cauce, que es a donde converge el embudo (GEN_PIER_L..R), asi que
+             * siempre cae en la misma columna y el jugador puede anticiparlo. */
+            if (gen_bridge && col >= gen_left && col <= gen_right &&
+                (col < BRIDGE_GAP_L || col > BRIDGE_GAP_R)) {
                 tile = TILE_BRIDGE;
                 attr = PAL_ISLAND;         /* arena maciza */
             }
@@ -1569,6 +1579,11 @@ static uint8_t celda_en_tierra(uint8_t cinta_row, uint8_t c) {
     /* Los bordes son tiles de ARENA, no agua: el agua va de l+1 a r-1. */
     if (c <= l || c >= r) return 1;
     if (il != 0xFF && c >= il && c <= ir) return 1;
+
+    /* PUENTE: la viga es solida salvo por el hueco. gen_bridge solo describe la
+     * fila que se esta generando, asi que el puente se apunta en una tabla por
+     * fila de cinta (un byte: 0 = no hay puente). */
+    if (puente_bit[cinta_row] && (c < BRIDGE_GAP_L || c > BRIDGE_GAP_R)) return 1;
     return 0;
 }
 

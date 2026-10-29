@@ -38,7 +38,7 @@ Estado de cada regla respecto al código actual:
 |---|---|---|
 | 3.1 | **Barco**: avanza por el agua en sentido contrario. | OK |
 | 3.2 | **Helicóptero**: vuela por el agua moviéndose lateralmente. | OK |
-| 3.3 | **Ninguno de los dos sale a tierra**: si llegan al borde del agua **rebotan y cambian de dirección**. | DIF — el helicóptero hoy recorre toda la pantalla (hasta el césped) |
+| 3.3 | **Ninguno de los dos sale a tierra**: si llegan al borde del agua **rebotan y cambian de dirección**. | OK — los límites salen del perfil de su fila, recalculados cada frame (incluye la isla) |
 | 3.4 | Si el avión choca con un barco/helicóptero **pierde una vida** (y el enemigo explota). | OK |
 | 3.5 | Disparar a un barco/heli lo destruye (puntos). | OK |
 | 3.6 | **Tanque**: va **por tierra**, siempre pegado a un **puente**, y dispara **misiles** hacia arriba por el río. | FALTA |
@@ -48,10 +48,10 @@ Estado de cada regla respecto al código actual:
 
 | # | Regla | Estado |
 |---|---|---|
-| 4.1 | El **puente** cruza el río de orilla a orilla; el agua pasa por debajo. | FALTA |
+| 4.1 | El **puente** cruza el río de orilla a orilla; el agua pasa por debajo. | PARCIAL — `TILE_BRIDGE` de `gen_left` a `gen_right`, con hueco. Falta que el agua se vea POR DEBAJO (hoy es viga maciza en la fila) |
 | 4.2 | El puente **tapa** (prioridad de tile) al avión cuando pasa bajo él. | FALTA |
-| 4.3 | Al llegar al puente hay que **pasar por el hueco del puente**; si el avión toca el puente → pierde una vida. | FALTA |
-| 4.4 | Cruzar un puente **completa un nivel**: la puntuación "congelada" (ver 6.3) se suma y empieza el nivel siguiente. | FALTA |
+| 4.3 | Al llegar al puente hay que **pasar por el hueco del puente**; si el avión toca el puente → pierde una vida. | OK — hueco `BRIDGE_GAP_L/R`=19..20, `puente_bit[]` en RAM para la colisión |
+| 4.4 | Cruzar un puente **completa un nivel**: la puntuación "congelada" (ver 6.3) se suma y empieza el nivel siguiente. | PARCIAL — el checkpoint LFSR funciona (morir repite el tramo). Falta puntuación y subida de dificultad |
 | 4.5 | Cada puente lleva su **tanque** cerca (3.6). | FALTA |
 
 ## 5. Combustible
@@ -68,7 +68,7 @@ Estado de cada regla respecto al código actual:
 | # | Regla | Estado |
 |---|---|---|
 | 6.1 | **3 vidas como máximo**, mostradas en el HUD. | OK |
-| 6.2 | Se pierde una vida por: choque con tierra/isla/puente, choque con enemigo, **misil** o **quedarse sin combustible**. | OK salvo misil/puente (FALTA) |
+| 6.2 | Se pierde una vida por: choque con tierra/isla/puente, choque con enemigo, **misil** o **quedarse sin combustible**. | OK salvo misil (FALTA) |
 | 6.3 | Al perder una vida: explosión, el avión vuelve al **punto de partida**, el río se **para** y hay que pulsar **FIRE** para continuar. La puntuación **no se resetea**. | OK |
 | 6.4 | En el arcade, la puntuación ganada desde el último puente se muestra **parpadeando** y solo se consolida al cruzar el siguiente puente (si mueres la pierdes). | FALTA |
 | 6.5 | Con 0 vidas → **GAME OVER** con panel de texto y FIRE/`R` para reintentar, `q` para salir. | OK |
