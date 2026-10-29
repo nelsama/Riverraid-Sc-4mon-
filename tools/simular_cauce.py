@@ -136,13 +136,13 @@ class Gen:
         mid = (ZONE_L + ZONE_R + 1) // 2
         w = self.right - self.left + 1
         if self.split_w:
-            w = self.split_w + 2 * self.arm_now()
+            w = self.split_w + 2 * self.arm_now() + 2
         elif w > W_MAX:
             w = W_MAX
         elif self.w_tras_isla and w < self.w_tras_isla:
             w = self.w_tras_isla
         else:
-            w = max(w, self.split_w + 2 * self.arm_now())
+            w = max(w, self.split_w + 2 * self.arm_now() + 2)
         if (not self.split_w) and self.w_tras_isla and w >= self.w_tras_isla:
             self.w_tras_isla = 0
 

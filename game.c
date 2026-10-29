@@ -1118,7 +1118,14 @@ static uint8_t generate_world_row(uint32_t n) {
              * hasta 5 con los puentes. OJO: el ancho con isla NO usa GEN_SPLIT_W
              * fijo (23): si se usa, los brazos se quedan en 7 SIEMPRE y la
              * progresion no se nota (medido con simular_cauce.py). */
-            uint8_t need = (uint8_t)(gen_split_w + 2 * gen_arm_now());
+            /* OJO con las DOS costas: gen_left..gen_right incluye la celda de
+             * costa en cada extremo, y la isla tambien se lleva las suyas. El
+             * agua navegable de cada brazo es (ancho - isla - 2 costas)/2, asi
+             * que para pedir N celdas de brazo el ancho es
+             *     isla + 2*N + 2 costas
+             * (antes faltaban las 2 costas y los brazos salian 1 celda mas
+             * estrechos de lo pedido: 4 en vez de 5 en el tramo dificil). */
+            uint8_t need = (uint8_t)(gen_split_w + 2 * gen_arm_now() + 2);
             w = need;
         } else if (w > GEN_W_MAX) {
             /* Sin isla el cauce no puede ser tan ancho que parezca un mar. */
@@ -1135,7 +1142,7 @@ static uint8_t generate_world_row(uint32_t n) {
              * celdas CON la isla aun dentro (medido: 5, 6, 8... en el tramo 1,
              * donde el minimo es 7). Aqui no se abre de golpe: solo se pone
              * el suelo que la tierra necesita. */
-            uint8_t need = (uint8_t)(gen_split_w + 2 * gen_arm_now());
+            uint8_t need = (uint8_t)(gen_split_w + 2 * gen_arm_now() + 2);
             if (w < need) w = need;
         }
         /* El ancho ya paso el bache: se suelta la referencia. */
@@ -1987,16 +1994,28 @@ static void update_boat(void) {
          * avion: asi el enemigo rebota en la orilla, en la isla y en la viga del
          * puente sin listas de limites que se desincronicen del rio. */
 
-        /* Si se quedo encerrado (el cauce se cerro a su lado), se empuja al
-         * agua mas cercana para que no rebote contra la nada. */
+        /* Si el cauce se cerro a su lado, se desplaza al agua mas CERCANA
+         * (no a la primera de la izquierda: eso hacia que el enemigo saltara
+         * de un extremo de la pantalla al otro de golpe). */
         if (!sprite_cabe(boat_x, boat_y)) {
-            uint8_t k;
-            for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
-                if (sprite_cabe((uint16_t)(k * 8), boat_y)) {
-                    boat_x = (uint8_t)(k * 8);
+            uint8_t c0 = (uint8_t)(boat_x >> 3);
+            uint8_t d;
+            uint8_t movido = 0;
+
+            for (d = 1; d < VC_MAP_COLS; d++) {
+                if (c0 >= d && sprite_cabe((uint16_t)((c0 - d) * 8), boat_y)) {
+                    boat_x = (uint8_t)((c0 - d) * 8);
+                    movido = 1;
+                    break;
+                }
+                if (sprite_cabe((uint16_t)((c0 + d) * 8), boat_y)) {
+                    boat_x = (uint8_t)((c0 + d) * 8);
+                    movido = 1;
                     break;
                 }
             }
+            /* Sin sitio en esta fila: el enemigo sale de la pantalla. */
+            if (!movido) { boat_active = 0; return; }
         }
 
         /* Deriva lateral con rebote: 1 px cada pocos frames. El HELICOPTERO
@@ -2059,11 +2078,27 @@ static void update_fuel(void) {
             fuel_active = 0;
             return;
         }
-        /* Si la fila por la que pasa ya no es agua (el cauce se estrecho o
-         * empezo una isla), el bidon SE RETIRA: no se queda encima del cesped
-         * ni dentro de la tierra, donde seria un objeto imposible de coger. */
+        /* El rio cambia de ancho y de sitio: si la fila por la que pasa el
+         * bidon deja de ser agua donde esta, SE MUEVE LATERALMENTE al agua mas
+         * cercana en vez de desaparecer. Antes se apagaba de golpe y el jugador
+         * veia bidones que parpadeaban a media pantalla. */
         if (!sprite_cabe(fuel_x, fuel_y)) {
-            fuel_active = 0;
+            uint8_t c0 = (uint8_t)(fuel_x >> 3);
+            uint8_t d;
+
+            for (d = 1; d < VC_MAP_COLS; d++) {
+                if (c0 >= d && sprite_cabe((uint16_t)((c0 - d) * 8), fuel_y)) {
+                    fuel_x = (uint8_t)((c0 - d) * 8);
+                    break;
+                }
+                if (sprite_cabe((uint16_t)((c0 + d) * 8), fuel_y)) {
+                    fuel_x = (uint8_t)((c0 + d) * 8);
+                    break;
+                }
+            }
+            /* Si en esta fila no hay NINGUN sitio valido (cauce cerrado por la
+             * viga del puente), entonces si se retira. */
+            if (d >= VC_MAP_COLS) fuel_active = 0;
         }
         return;
     }
