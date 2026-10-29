@@ -715,17 +715,30 @@ static void hud_draw(void) {
 #define GEN_SECTOR     16     /* bloques entre puentes (1 puente cada uno)*/
 #define GEN_AHEAD      2      /* filas de cinta fuera de la vista (ver
                                * advance_scroll): 32 de cinta - 30 visibles */
-#define GEN_W_MIN      6      /* ancho minimo del cauce (celdas de agua)  */
+#define GEN_W_MIN      7      /* ancho minimo del cauce en el primer tramo */
+#define GEN_W_HARD_MIN 5      /* ... y en el ultimo (dificultad maxima)    */
 #define GEN_W_MAX      20     /* ancho maximo sin isla (cabe en la cinta) */
 #define GEN_CURVE_MAX  3      /* desplazamiento maximo del centro         */
 /* ISLA: GEN_ISLAND_W es el HUECO central (suelo + las dos orillas), o sea las
  * columnas de tierra que se ven. Con 9 columnas y dos brazos de 5 el cauce se
  * abre a GEN_SPLIT_W = 19 celdas. */
-#define GEN_ARM_MIN    5      /* ancho de cada brazo con isla             */
+#define GEN_ARM_MIN    5      /* ancho MINIMO de cada brazo (tramo duro)  */
+#define GEN_ARM_EASY   7      /* ancho de cada brazo en el primer tramo    */
 #define GEN_ISLAND_W   9      /* isla visible = 9 columnas de tierra      */
-/* Con isla el cauce se abre hasta GEN_SPLIT_W: el rio se ensancha para que
- * quepan la tierra central y los dos brazos. */
-#define GEN_SPLIT_W    (GEN_ISLAND_W + 2 * GEN_ARM_MIN)   /* 19 */
+/* Con isla el cauce se abre a GEN_SPLIT_W: el rio se ensancha para que quepan
+ * la tierra central y los dos brazos MAS ANCHOS (los del arranque). */
+#define GEN_SPLIT_W    (GEN_ISLAND_W + 2 * GEN_ARM_EASY)  /* 23 */
+
+/* PROGRESION: cada puente (sector) estrecha el rio. Con GEN_SECTOR bloques por
+ * tramo y 4 tramos, es decir 4 puentes, el ancho llega al minimo duro:
+ *
+ *   tramo 1: brazos de 7 y cauce de 7..20   (facil)
+ *   tramo 2: brazos de 6
+ *   tramo 3: brazos de 5, cauce desde 6
+ *   tramo 4: brazos de 5, cauce desde 5     (dificil)  ← se queda aqui
+ *
+ * GEN_RAMP_SECTORS = 3 significa "3 puentes para pasar de facil a dificil". */
+#define GEN_RAMP_SECTORS 3
 
 /* PUENTE: coordenadas FIJAS (documento de puentes, X1=34 X2=66 sobre 100).
  * Sobre 100 de ancho de pantalla -> 13,6..26,4; en nuestras 40 columnas
@@ -760,6 +773,10 @@ static uint8_t  gen_t_left;           /* objetivo del bloque en curso     */
 static uint8_t  gen_t_right;          /* (se interpola 1 celda por fila)  */
 static uint8_t  gen_split_on;         /* 1 = este tramo tiene tierra      */
 static uint8_t  gen_split_w;          /* ancho ACTUAL de la isla (1..9)   */
+/* Ancho del cauce en la ultima fila CON isla: al desaparecer la tierra el cauce
+ * volvia en pocas filas al ancho del bloque y dejaba un bache. Mientras la
+ * curva pida menos, se mantiene este ancho. */
+static uint8_t  gen_w_tras_isla;
 static uint8_t  gen_split_target;     /* semiancho objetivo de la tierra  */
 static uint8_t  gen_entity;           /* entidad del bloque (bits 9-11)   */
 static uint8_t  gen_funnel;           /* 1 = bloque de embudo (pre-puente)*/
@@ -813,6 +830,30 @@ static uint8_t gen_width_from(bits) {
     return gen_width_tab[bits & 0x0F];
 }
 
+/* --- PROGRESION: de facil (tramo 1) a dificil (a partir del tramo 4) ---
+ *
+ * `paso` = cuantos tramos se ha avanzado desde el arranque, con TOPE: el juego
+ * se estabiliza en el nivel mas duro en vez de estrecharse sin fin.
+ *
+ * Se aplica SOLO aqui, al generar un bloque nuevo. Nunca se resta nada a
+ * gen_left/gen_right ya calculados: como la curva se interpola 1 celda por
+ * fila, cualquier resta se deshace en la fila siguiente y el ajuste no llega a
+ * verse. Por eso el minimo se aplica sobre el ANCHO OBJETIVO del bloque. */
+#define GEN_STEP()  ((uint8_t)(((gen_sector - 1) < GEN_RAMP_SECTORS) ? \
+                               ((gen_sector - 1) & 0xFF) : GEN_RAMP_SECTORS))
+
+/* Ancho minimo del cauce segun el tramo: 7 -> 6 -> 5. */
+static uint8_t gen_w_min_now(void) {
+    uint8_t paso = GEN_STEP();
+    return (uint8_t)(GEN_W_MIN - ((paso > 2) ? 2 : paso));
+}
+
+/* Ancho minimo de cada brazo junto a la isla: 7 -> 6 -> 5. */
+static uint8_t gen_arm_now(void) {
+    uint8_t paso = GEN_STEP();
+    return (uint8_t)(GEN_ARM_EASY - ((paso > 2) ? 2 : paso));
+}
+
 /* Precalcula el bloque: avanza el LFSR y fija el ANCHO, la CURVA y la ISLA
  * objetivos del tramo. Los bordes actuales se acercan a ellos 1 celda por
  * fila (interpolacion). */
@@ -856,6 +897,15 @@ static void gen_new_block(void) {
     /* --- Ancho del cauce: bits 0-3 (escalado al rango jugable) --- */
     w = gen_width_from(gen_seed_lo);
 
+    /* El cauce NUNCA baja del minimo del tramo: en el arranque 7 celdas y a
+     * partir del 4.o puente 5. Sin esto los primeros tramos salian con rendijas
+     * de 6 celdas igual que el final, y la curva hacia la dificultad no se
+     * notaba. */
+    {
+        uint8_t wmin = gen_w_min_now();
+        if (w < wmin) w = wmin;
+    }
+
     /* --- Curva: bits 4-6 desplazan el CENTRO (el cauce serpentea) --- */
     c = (uint8_t)((gen_seed_hi >> 4) & 0x07);        /* 0..7 */
     if (c > 6) c = 5;                                /* 0..5 */
@@ -877,9 +927,11 @@ static void gen_new_block(void) {
     /* --- Isla: bits 7-8, solo si caben dos brazos navegables ---
      * OJO: `((gen_seed_lo >> 7) & 3) == 0` pide dos bits a cero y el LFSR los
      * da a la vez solo el 10% de las veces: la isla salia casi nunca. Se usa
-     * el bit 7, que es 1 de cada 2 y coincide con "00" la mitad de las veces
-     * (el otro bit que pedia el documento no es posible tenerlo junto). */
-    if ((gen_seed_lo & 0x80) == 0) {
+     * el bit 7, que es 1 de cada 2... pero eso daba isla en la MITAD de los
+     * bloques (medido: 198 de 400), y con media pantalla de tierra el rio no
+     * se ve ANCHO nunca. Se pide ademas que el bloque sea par: 1 de cada 4,
+     * que deja tramos de cauce libre entre isla e isla. */
+    if ((gen_seed_lo & 0x80) == 0 && (gen_block_idx & 1)) {
         /* El ensanche del cauce para que quepa la isla se hace al generar la
          * fila (generate_world_row), donde ya se conoce el ancho real. El
          * objetivo es el ANCHO de la isla en columnas (9), no su semiancho. */
@@ -1026,6 +1078,15 @@ static uint8_t generate_world_row(uint32_t n) {
     if (gen_left + 3 > gen_right) {          /* nunca menos de 4 celdas */
         gen_right = (uint8_t)(gen_left + 3);
     }
+
+    /* EL CAUCE NO SE ESTRECHA JUSTO TRAS UNA ISLA: al desvanecerse la tierra
+     * el cauce volvia al ancho del bloque (12 en el tramo 1) y se quedaba asi
+     * unas filas, o sea un estrechamiento feo pegado al ensanche. Se recuerda
+     * el ancho de la ultima fila CON isla y, mientras la curva lo pida, no se
+     * baja de ahi. */
+    if (gen_split_w) {
+        gen_w_tras_isla = (uint8_t)(gen_right - gen_left + 1);
+    }
     gen_half = (uint8_t)((gen_right - gen_left + 1) / 2);
 
     /* --- Tierra central: crece y se encoge 1 celda por fila --- */
@@ -1048,15 +1109,34 @@ static uint8_t generate_world_row(uint32_t n) {
              * necesita (isla + dos brazos). Interpolar no vale: la isla dura
              * pocas filas y el borde solo avanza 1 celda por fila, asi que el
              * ensanche no llegaba nunca y los brazos quedaban en 4. Al salir
-             * de la isla si se estrecha progresivamente. */
-            w = GEN_SPLIT_W;
-            {
-                uint8_t need = (uint8_t)(gen_split_w + 2 * GEN_ARM_MIN);
-                if (w < need) w = need;
-            }
+             * de la isla si se estrecha progresivamente.
+             * Los brazos son MAS ANCHOS al principio (7) y se van apretando
+             * hasta 5 con los puentes. OJO: el ancho con isla NO usa GEN_SPLIT_W
+             * fijo (23): si se usa, los brazos se quedan en 7 SIEMPRE y la
+             * progresion no se nota (medido con simular_cauce.py). */
+            uint8_t need = (uint8_t)(gen_split_w + 2 * gen_arm_now());
+            w = need;
         } else if (w > GEN_W_MAX) {
             /* Sin isla el cauce no puede ser tan ancho que parezca un mar. */
             w = GEN_W_MAX;
+        } else if (gen_w_tras_isla && w < gen_w_tras_isla) {
+            /* Acaba de desaparecer una isla: no se encoge por debajo del ancho
+             * que tenia con ella, para no dejar un bache justo despues. */
+            w = gen_w_tras_isla;
+        } else {
+            /* EL RESTO DE LA ISLA: hay tierra saliendo o entrando y el cauce
+             * ya no puede ser mas estrecho de lo que pide esa tierra. La
+             * curva del bloque se interpola 1 celda por fila y llega antes
+             * que el desvanecido de la isla: sin esto quedaban filas de 5
+             * celdas CON la isla aun dentro (medido: 5, 6, 8... en el tramo 1,
+             * donde el minimo es 7). Aqui no se abre de golpe: solo se pone
+             * el suelo que la tierra necesita. */
+            uint8_t need = (uint8_t)(gen_split_w + 2 * gen_arm_now());
+            if (w < need) w = need;
+        }
+        /* El ancho ya paso el bache: se suelta la referencia. */
+        if (!gen_split_w && gen_w_tras_isla && w >= gen_w_tras_isla) {
+            gen_w_tras_isla = 0;
         }
 
         /* OJO: se reconstruye por BORDES, no con semiancho. Con semiancho entero
@@ -1064,6 +1144,16 @@ static uint8_t generate_world_row(uint32_t n) {
          * la isla no llegaba nunca a la pantalla. */
         l = (uint8_t)(center - (w / 2));
         r = (uint8_t)(l + w - 1);
+
+        /* Suelo del tramo en TODAS las filas: la curva interpola 1 celda por
+         * fila y el objetivo del bloque puede ser mas ancho que el minimo, asi
+         * que sin esto quedaban filas sueltas por debajo del minimo del tramo
+         * mientras el borde bajaba. */
+        if (w < gen_w_min_now()) {
+            l = (uint8_t)(center - (gen_w_min_now() / 2));
+            r = (uint8_t)(l + gen_w_min_now() - 1);
+            w = gen_w_min_now();
+        }
         gen_left  = l;
         gen_right = r;
         gen_half  = (uint8_t)(w / 2);
