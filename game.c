@@ -730,11 +730,14 @@ static void hud_draw(void) {
 #define GEN_ARM_MIN    5      /* ancho MINIMO de cada brazo (tramo duro)  */
 #define GEN_ARM_EASY   7      /* ancho de cada brazo en el primer tramo    */
 #define GEN_ISLAND_W   9      /* isla visible = 9 columnas de tierra      */
-/* ISLA MINIMA: por debajo de esto la tierra central NO se pinta ni cuenta para
- * la colision. Una isla de 1-2 celdas es una tira de arena de 8-16 px que
- * aparece y desaparece con el scroll y mata sin que se vea: el jugador lo vive
- * como "choque con algo invisible". 3 celdas es el minimo legible. */
-#define ISLE_MIN_COLS  3
+/* ISLA MINIMA, en COLUMNAS VISIBLES (costa + cesped + costa).
+ *
+ * gen_split_w cuenta columnas que se ven, no celdas de cesped: con 3 columnas
+ * la isla es "arena, cesped, arena", o sea UNA sola celda de cesped de 8 px.
+ * Eso sigue siendo una tira que aparece y desaparece con el scroll y mata sin
+ * que se vea ("choque contra algo invisible"), asi que el minimo se pone en 5
+ * = 3 celdas de cesped entre las dos costas. */
+#define ISLE_MIN_COLS  5
 /* Con isla el cauce se abre a GEN_SPLIT_W: el rio se ensancha para que quepan
  * la tierra central y los dos brazos MAS ANCHOS (los del arranque). */
 #define GEN_SPLIT_W    (GEN_ISLAND_W + 2 * GEN_ARM_EASY)  /* 23 */

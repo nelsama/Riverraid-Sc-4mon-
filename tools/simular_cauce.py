@@ -25,6 +25,7 @@ ARM_EASY, ARM_MIN_HARD = 7, 5
 ISLAND_W = 9
 SPLIT_W = ISLAND_W + 2 * ARM_EASY          # 23
 RAMP_SECTORS = 3
+ISLE_MIN = 5
 
 
 class Gen:
@@ -123,7 +124,7 @@ class Gen:
         if self.left + 3 > self.right:
             self.right = self.left + 3
 
-        if self.split_w:
+        if self.split_w >= ISLE_MIN:
             self.w_tras_isla = self.right - self.left + 1
 
         # tierra central: crece/encoge 1 celda por fila
@@ -135,14 +136,14 @@ class Gen:
 
         mid = (ZONE_L + ZONE_R + 1) // 2
         w = self.right - self.left + 1
-        if self.split_w:
+        if self.split_w >= ISLE_MIN:
             w = self.split_w + 2 * self.arm_now() + 2
         elif w > W_MAX:
             w = W_MAX
         elif self.w_tras_isla and w < self.w_tras_isla:
             w = self.w_tras_isla
         else:
-            w = max(w, self.split_w + 2 * self.arm_now() + 2)
+                w = max(w, self.split_w + 2 * self.arm_now() + 2)
         if (not self.split_w) and self.w_tras_isla and w >= self.w_tras_isla:
             self.w_tras_isla = 0
 
@@ -155,7 +156,7 @@ class Gen:
         self.left, self.right = l, r
 
         il = ir = None
-        if self.split_w:
+        if self.split_w >= ISLE_MIN:
             ww = min(self.split_w, ISLAND_W)
             il = l + ((r - l + 1) - ww) // 2
             ir = il + ww - 1
