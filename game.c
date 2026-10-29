@@ -500,6 +500,7 @@ static uint8_t fire_bullet(void);
 static void hud_draw(void);
 static void game_over_screen(void);
 static void plane_place_safe(void);
+static uint8_t celda_agua(uint8_t cinta_row, uint8_t c);
 
 /* ===========================================================================
  * ENTRADA
@@ -1806,31 +1807,40 @@ static void plane_hit(void) {
 /* Coloca el avion en un punto navegable de su fila: el centro del agua libre
  * (a izquierda o derecha de la isla central si la hay). */
 static void plane_place_safe(void) {
-    uint8_t l  = (uint8_t)(river_l[PLANE_ROW] + 1);   /* agua interior */
-    uint8_t r  = (uint8_t)(river_r[PLANE_ROW] - 1);
-    uint8_t il = island_l[PLANE_ROW];
-    uint8_t ir = island_r[PLANE_ROW];
-    uint8_t col;
-    /* El avion se centra en la CELDA elegida: su centro debe caer en el centro
-     * de la celda (col*8 + 4), o sea plane_x = col*8 - 4. Antes se usaba
-     * col*8 - 4 + 4, que lo dejaba 4 px a la derecha del agua. */
+    /* Coloca el avion en el agua, CENTRADO en el hueco donde quepa ENTERO.
+     *
+     * OJO: no basta con centrarlo en el cauce o en un brazo. El sprite mide
+     * 16 px (2 celdas), asi que si nace en un cauce de 3 celdas con la orilla
+     * a un lado, medio sprite queda en tierra y la colision lo mata al
+     * instante: el jugador pulsa FIRE y el avion vuelve a morir, una y otra
+     * vez, sin poder jugar. Se busca una celda c que cumpla que caben c y c+1
+     * en agua de la MISMA fila de cinta. */
+    uint8_t row = PLANE_ROW;
+    uint8_t k;
+    uint8_t mejor = 0xFF;
+    uint8_t mejor_dist = 0xFF;
+    uint8_t centro = (uint8_t)((GEN_ZONE_L + GEN_ZONE_R + 1) / 2);
 
-    if (il != 0xFF) {
-        /* Elige el brazo mas ancho y centra el avion en el. */
-        uint8_t left_w  = (uint8_t)(il - l);
-        uint8_t right_w = (uint8_t)(r - ir);
-        if (left_w >= right_w) col = (uint8_t)(l + (left_w / 2));
-        else                   col = (uint8_t)(ir + (right_w / 2));
-    } else {
-        col = (uint8_t)(l + ((r - l) / 2));
+    for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
+        uint8_t dist;
+        if (!celda_agua(row, k) || !celda_agua(row, (uint8_t)(k + 1))) continue;
+        dist = (uint8_t)((k > centro) ? (k - centro) : (centro - k));
+        if (dist < mejor_dist) { mejor_dist = dist; mejor = k; }
     }
 
-    plane_x = (uint16_t)((uint16_t)col * 8) - (PLANE_W / 2) + 4;
+    if (mejor != 0xFF) {
+        /* Centro del hueco de 2 celdas. */
+        plane_x = (uint16_t)((uint16_t)mejor * 8 + 8) - (PLANE_W / 2);
+    } else {
+        /* Sin hueco de 2 celdas (cauce de 1 celda): se pone donde haya agua,
+         * aunque roce; es mejor que dejarlo clavado muriendo. */
+        for (k = GEN_ZONE_L; k <= GEN_ZONE_R; k++) {
+            if (celda_agua(row, k)) { plane_x = (uint16_t)(k * 8) - 4; break; }
+        }
+    }
     plane_y = PLANE_Y;
 
-    /* Limita al rango de movimiento real: la columna puede estar en los
-     * extremos del cauce y el sprite (16 px) no debe nacer metido en la orilla
-     * ni fuera de la pantalla. */
+    /* Limites de pantalla: nunca fuera del rango visible. */
     if (plane_x < PLANE_MIN_X) plane_x = PLANE_MIN_X;
     if (plane_x > PLANE_MAX_X) plane_x = PLANE_MAX_X;
 }
@@ -1994,28 +2004,28 @@ static void update_boat(void) {
          * avion: asi el enemigo rebota en la orilla, en la isla y en la viga del
          * puente sin listas de limites que se desincronicen del rio. */
 
-        /* Si el cauce se cerro a su lado, se desplaza al agua mas CERCANA
-         * (no a la primera de la izquierda: eso hacia que el enemigo saltara
-         * de un extremo de la pantalla al otro de golpe). */
-        if (!sprite_cabe(boat_x, boat_y)) {
-            uint8_t c0 = (uint8_t)(boat_x >> 3);
+        /* Si el cauce se cerro a su lado, se desplaza AL AGUA MAS CERCANA,
+         * pero **1 px por frame**: moviendolo de golpe saltaba de una celda a
+         * otra y el jugador lo veia teletransportarse. Si se sale de la
+         * pantalla por arriba/abajo no se mueve de lado. */
+        if (!celda_agua(FILA_CINTA(boat_y), (uint8_t)(boat_x >> 3))) {
+            uint8_t row = FILA_CINTA(boat_y);
+            uint8_t c0  = (uint8_t)(boat_x >> 3);
+            uint8_t target = 0xFF;
             uint8_t d;
-            uint8_t movido = 0;
 
-            for (d = 1; d < VC_MAP_COLS; d++) {
-                if (c0 >= d && sprite_cabe((uint16_t)((c0 - d) * 8), boat_y)) {
-                    boat_x = (uint8_t)((c0 - d) * 8);
-                    movido = 1;
-                    break;
-                }
-                if (sprite_cabe((uint16_t)((c0 + d) * 8), boat_y)) {
-                    boat_x = (uint8_t)((c0 + d) * 8);
-                    movido = 1;
-                    break;
-                }
+            for (d = 1; d < VC_MAP_COLS && target == 0xFF; d++) {
+                if (c0 >= d && celda_agua(row, (uint8_t)(c0 - d))) target = (uint8_t)(c0 - d);
+                else if (celda_agua(row, (uint8_t)(c0 + d)))       target = (uint8_t)(c0 + d);
             }
-            /* Sin sitio en esta fila: el enemigo sale de la pantalla. */
-            if (!movido) { boat_active = 0; return; }
+            if (target == 0xFF) { boat_active = 0; return; }
+
+            /* 1 px hacia el objetivo, sin pasarse. */
+            {
+                uint8_t tx = (uint8_t)(target * 8);
+                if (boat_x < tx) boat_x++;
+                else if (boat_x > tx) boat_x--;
+            }
         }
 
         /* Deriva lateral con rebote: 1 px cada pocos frames. El HELICOPTERO
@@ -2088,17 +2098,20 @@ static void update_fuel(void) {
 
             for (d = 1; d < VC_MAP_COLS; d++) {
                 if (c0 >= d && sprite_cabe((uint16_t)((c0 - d) * 8), fuel_y)) {
-                    fuel_x = (uint8_t)((c0 - d) * 8);
                     break;
                 }
-                if (sprite_cabe((uint16_t)((c0 + d) * 8), fuel_y)) {
-                    fuel_x = (uint8_t)((c0 + d) * 8);
-                    break;
-                }
+                if (sprite_cabe((uint16_t)((c0 + d) * 8), fuel_y)) break;
             }
             /* Si en esta fila no hay NINGUN sitio valido (cauce cerrado por la
              * viga del puente), entonces si se retira. */
             if (d >= VC_MAP_COLS) fuel_active = 0;
+            else {
+                /* 1 px por frame hacia el agua: desplazarlo de golpe hacia que
+                 * el bidon saltara de sitio de un frame a otro. */
+                uint8_t tx = (uint8_t)((c0 < d ? (c0 + d) : (c0 - d)) * 8);
+                if (fuel_x < tx) fuel_x++;
+                else if (fuel_x > tx) fuel_x--;
+            }
         }
         return;
     }
@@ -2463,6 +2476,13 @@ int main(void) {
         if (esperando_fire) {
             if (fire_pressed()) {
                 esperando_fire = 0;
+                /* OJO: sin esto el avion queda INVULNERABLE. plane_hit() pone
+                 * plane_dead=1 y solo reset_game() lo volvia a 0, asi que al
+                 * reanudar con FIRE las colisiones seguian saltandose por el
+                 * "if (plane_dead) return" y el avion atravesaba orillas,
+                 * islas y enemigos sin perder una vida. */
+                plane_dead = 0;
+                plane_dead_frames = 0;
                 scroll_speed = SCROLL_NORM;
                 scroll_acc   = 0;
                 snd_engine_on();
