@@ -399,7 +399,9 @@ static uint8_t   fuel_refuel_tick;/* contador de frames de contacto       */
 static uint8_t   river_l[VC_MAP_ROWS];
 static uint8_t   river_r[VC_MAP_ROWS];
 static uint8_t   island_l[VC_MAP_ROWS];
-static uint8_t   island_r[VC_MAP_ROWS];
+/* NO existe island_r[]: el ancho de la isla nunca pasa de GEN_ISLAND_W, asi
+ * que el borde derecho es siempre il + GEN_ISLAND_W - 1 (lo calcula
+ * celda_agua). Guardar el array costaba 32 bytes de BSS que no cabian. */
 
 /* PUENTE: 1 si la fila de cinta es la viga (mata salvo el hueco). Se lleva en
  * RAM porque gen_bridge solo vale para la fila que se esta generando. */
@@ -700,7 +702,6 @@ static void read_input(void) {
  * el patron de los digitos y de la barra cuando su valor cambia.
  */
 static uint8_t  hud_last_digit[4];
-static uint8_t  hud_last_filled = 0xFF;   /* 0xFF = aun no dibujada */
 static uint8_t  hud_last_slot_on[8];      /* estado de cada pieza de la barra */
 static uint8_t  hud_last_lives = 0xFF;
 
@@ -720,7 +721,6 @@ static void hud_setup(void) {
     fv_sprite_move((uint8_t)(SPR_HUD_LIVES + 1),
                    (uint16_t)(HUD_LIVES_X + 8), HUD_Y, VC_SPPAL_1 | HUD_SCALE);
     hud_last_digit[0] = hud_last_digit[1] = hud_last_digit[2] = hud_last_digit[3] = 0xFF;
-    hud_last_filled = 0xFF;
     hud_last_lives = 0xFF;
 }
 
@@ -765,7 +765,6 @@ static void hud_draw(void) {
                            (uint8_t)(on ? HUD_PAT_BAR_ON : HUD_PAT_BAR_OFF));
             }
         }
-        hud_last_filled = filled;
     }
 
     /* Icono de vida + numero de vidas. */
@@ -787,8 +786,10 @@ static void hud_draw(void) {
  * juntarse), cada fila de la cinta guarda su propio perfil:
  *
  *   river_l[r] / river_r[r]   : columnas de AGUA utiles (bordes del cauce)
- *   island_l[r]/island_r[r]   : tramo de ISLA CENTRAL que parte el cauce
- *                               (0xFF = el cauce es uno solo)
+ *   island_l[r]               : borde IZQUIERDO de la isla central que parte
+ *                               el cauce (0xFF = el cauce es uno solo). El
+ *                               borde derecho NO se guarda: es siempre
+ *                               island_l + GEN_ISLAND_W - 1.
  *
  * Con la isla central el agua queda a su izquierda y a su derecha: dos brazos.
  * =========================================================================== */
@@ -1077,13 +1078,42 @@ static void gen_new_block(void) {
      * el bit 7, que es 1 de cada 2... pero eso daba isla en la MITAD de los
      * bloques (medido: 198 de 400), y con media pantalla de tierra el rio no
      * se ve ANCHO nunca. Se pide ademas que el bloque sea par: 1 de cada 4,
-     * que deja tramos de cauce libre entre isla e isla. */
+     * que deja tramos de cauce libre entre isla e isla.
+     *
+     * BUG CORREGIDO: la isla pedia 19 columnas de cauce para empezar a crecer,
+     * pero solo se ensanchaba el cauce DESPUES de crecer la tierra. Circulo
+     * sin salida: la isla se activaba y moria sin dibujarse (5% de las filas).
+     * Ahora, si el bloque lleva isla, el cauce nace con GEN_SPLIT_W = 23. */
     if ((gen_seed_lo & 0x80) == 0 && (gen_block_idx & 1)) {
         /* El ensanche del cauce para que quepa la isla se hace al generar la
          * fila (generate_world_row), donde ya se conoce el ancho real. El
          * objetivo es el ANCHO de la isla en columnas (9), no su semiancho. */
         gen_split_target = GEN_ISLAND_W;
         gen_split_on = 1;
+
+        /* OJO: el bloque tiene que ser ANCHO de verdad. La tierra solo crece
+         * si el cauce ya tiene sitio para ella (`ancho >= split_w + 1 +
+         * 2*brazo + 2`, o sea 19 columnas para empezar), pero el cauce solo se
+         * ensancha DESPUES de que la tierra haya crecido (mas abajo, cuando
+         * split_w >= ISLE_MIN_COLS). Con el ancho aleatorio (9..22, casi
+         * siempre 11..15) ese circulo no se rompia NUNCA: la isla se activaba
+         * y moria en el mismo bloque sin dibujarse ni una fila (medido: solo
+         * el 5% de las filas tenia isla). Forzando el ancho del cauce partido
+         * (GEN_SPLIT_W = 23) la tierra ya cabe desde el primer frame del
+         * bloque y crece 1 columna por fila como estaba previsto.
+         *
+         * Se reutiliza el `center` de arriba y se acota igual que el caso
+         * normal: sin variables temporales nuevas (el programa va justo de
+         * RAM y cualquier otra costaba 46 bytes de BSS al enlazador). */
+        w = GEN_SPLIT_W;
+        l = (uint8_t)(center - (w / 2));
+        if (l < GEN_ZONE_L || (uint8_t)(l + w - 1) > GEN_ZONE_R) {
+            gen_split_on = 0;
+            gen_split_target = 0;
+        } else {
+            gen_t_left  = l;
+            gen_t_right = (uint8_t)(l + w - 1);
+        }
     } else {
         gen_split_target = 0;
         gen_split_on = 0;
@@ -1361,7 +1391,9 @@ static uint8_t generate_world_row(uint32_t n) {
     river_l[cinta_row]  = gen_left;
     river_r[cinta_row]  = gen_right;
     island_l[cinta_row] = il;
-    island_r[cinta_row] = ir;
+    /* El borde derecho de la isla se reconstruye en celda_agua(): siempre mide
+     * GEN_ISLAND_W pegada a il (ver el comentario de island_l). Se guarda
+     * `ir` en la variable local solo para pintar la fila. */
 
     /* --- Pinta la fila en UNA sola pasada, con tile y atributo siempre ---
      *
@@ -1924,7 +1956,7 @@ static uint8_t celda_agua(uint8_t cinta_row, uint8_t c) {
     uint8_t l  = river_l[cinta_row];
     uint8_t r  = river_r[cinta_row];
     uint8_t il = island_l[cinta_row];
-    uint8_t ir = island_r[cinta_row];
+    uint8_t ir = (uint8_t)(il + GEN_ISLAND_W - 1);   /* ver island_l[] */
 
     /* Los bordes son tiles de ARENA, no agua: el agua va de l+1 a r-1. */
     if (c <= l || c >= r) return 0;

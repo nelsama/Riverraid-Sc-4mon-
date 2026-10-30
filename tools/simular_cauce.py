@@ -106,6 +106,18 @@ class Gen:
         if split:
             self.split_target = ISLAND_W
             self.split_on = 1
+            # Si el bloque lleva isla, el cauce se abre a SPLIT_W para que la
+            # tierra quepa desde la primera fila (ver game.c).
+            w = SPLIT_W
+            l = center - w // 2
+            r = l + w - 1
+            if l < ZONE_L:
+                l = ZONE_L
+                r = l + w - 1
+            if r > ZONE_R:
+                r = ZONE_R
+                l = r - w + 1
+            self.t_left, self.t_right = l, r
         else:
             self.split_target = 0
             self.split_on = 0
