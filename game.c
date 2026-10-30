@@ -80,12 +80,25 @@ static uint8_t  scroll_step;
 #define FUEL_DRAIN      1      /* unidades por 'n' frames (ver tick) */
 #define FUEL_DRAIN_EVERY 10    /* drenar 1 unidad cada N frames       */
 #define FUEL_RESPAWN    100    /* combustible con el que se reaparece */
-/* Recarga por CONTACTO con el bidon: no es instantanea. Se suman
- * FUEL_REFUEL_STEP unidades cada FUEL_REFUEL_EVERY frames que el avion siga
- * tocando el bidon, asi lo que cargas depende del tiempo de contacto (pasar
- * rapido por el borde carga poco; quedarse encima carga mas). */
-#define FUEL_REFUEL_STEP  8    /* unidades por pulso de recarga */
-#define FUEL_REFUEL_EVERY 3    /* frames entre pulsos            */
+/* Recarga por CONTACTO con el bidon: no es instantanea y el bidon NO se
+ * consume. Cada FUEL_REFUEL_EVERY frames tocando el bidon se suma
+ * FUEL_REFUEL_STEP y suena UN TINK, asi que mas tiempo de contacto = mas
+ * combustible y mas golpes. Rozarlo da 1-2 tinks; sobrevolarlo entero da una
+ * rafaga, y cada tink se oye separado (ver TINK_SPACE en fastsound.h).
+ *
+ * FUEL_REFUEL_EVERY = 4 coincide a proposito con el hueco del tink (3 frames
+ * de impulso + 2 de silencio = 5, mas uno de margen). Si el pulso fuese mas
+ * rapido que el hueco, algun tink se descartaria y el jugador oiria MENOS de
+ * lo que carga, asi que el sonido y la recarga van al mismo ritmo.
+ *
+ * STEP = 6 esta ajustado a la ESCALA DE LA BARRA, no al reves: la barra tiene
+ * HUD_FUEL_W = 8 piezas para FUEL_MAX = 200, o sea 25 unidades por pieza. Un
+ * sobrevuelo da unos 6 pulsos = 36 unidades, que es 1,4 piezas: se VE subir la
+ * barra en cada bidon. Con STEP = 1 un sobrevuelo daba 6 unidades = 0,24
+ * piezas, no se encendia NINGUNA pieza y repostar parecia no hacer nada (se
+ * midio: 6 bidones seguidos = +34 unidades = 0 piezas). */
+#define FUEL_REFUEL_STEP  6    /* unidades por pulso de recarga  */
+#define FUEL_REFUEL_EVERY 4    /* frames entre pulsos (= 1 tink) */
 
 /* Puntos. */
 #define SCORE_SHIP     100
@@ -306,6 +319,17 @@ static uint16_t rng_state;
 #define DBG_COL    (*(volatile uint8_t *)0x03E2)
 #define DBG_L      (*(volatile uint8_t *)0x03E3)
 #define DBG_R      (*(volatile uint8_t *)0x03E4)
+
+/* Diagnostico de la RECARGA por contacto ($03E5-$03EA). Son 6 bytes de
+ * contadores que se actualizan una vez por frame; sirven para medir con
+ * /ram.bin cuanto sube `fuel` y cuantos frames dura el contacto, sin depender
+ * de capturas de pantalla ni del reloj de pared. */
+#define DBG_FUEL        (*(volatile uint8_t *)0x03E5)  /* valor de fuel ahora  */
+#define DBG_FUEL_ON     (*(volatile uint8_t *)0x03E6)  /* 1 = bidon en pantalla */
+#define DBG_TICK        (*(volatile uint8_t *)0x03E7)  /* fuel_refuel_tick     */
+#define DBG_TOUCH       (*(volatile uint8_t *)0x03E8)  /* 1 = tocando el bidon */
+#define DBG_PX          (*(volatile uint8_t *)0x03E9)  /* plane_x              */
+#define DBG_FX          (*(volatile uint8_t *)0x03EA)  /* fuel_x               */
 
 /* El avion se dibuja con su esquina superior en plane_y. Para que este CENTRADO
  * en las filas de cinta que ocupa, el centro (plane_y + PLANE_H/2) debe caer en
@@ -2188,51 +2212,56 @@ static void check_plane_collisions(void) {
         }
     }
 
-    /* Avion <-> deposito de combustible: RECARGA POR CONTACTO.
+    /* Avion <-> deposito de combustible: EL BIDON NO SE CONSUME.
      *
-     * El bidon NO se consume en el primer frame de solape: mientras el avion
-     * siga tocandolo se acumula combustible cada FUEL_REFUEL_EVERY frames, asi
-     * que lo que cargas depende del TIEMPO de contacto (rozarlo de lado suma
-     * poco; quedarse encima llena el deposito). El acumulador NO se descarta
-     * al soltar el bidon: lo cargado se queda y el bidon se da por recogido.
-     * Con el deposito a tope no se toca: el bidon pasa de largo. */
-    if (fuel_active && fuel > 0) {
+     * El bidon es una ENTIDAD del rio, sin nivel propio: mientras el avion
+     * este en CONTACTO con el, el estanque del avion se va llenando. Por eso
+     * lo que cargas es proporcional al TIEMPO de contacto: rozarlo de lado
+     * suma poco, sobrevolarlo entero llena el deposito.
+     *
+     * Al soltarlo el bidon SIGUE EN EL RIO (antes se retiraba con
+     * fuel_active = 0, y eso hacia imposible notar la proporcionalidad: no
+     * habia forma de estar encima cargando). Solo desaparece cuando su caja
+     * sale de pantalla (update_fuel) o cuando lo recoge el propio avion ya
+     * con el deposito a tope.
+     *
+     * El sonido de repostaje dura lo que dura el contacto (snd_fuel_touch se
+     * refresca en cada frame de solape). */
+    if (fuel_active) {
         /* La caja del avion es de 16 px (avion a escala 2x); la del bidon se
          * toma a su tamano real de 8 px para que el contacto sea sincero. */
         if (fv_box_toca(plane_x, plane_y, PLANE_W, PLANE_H,
                      fuel_x, fuel_y, 8, 8)) {
             fuel_touching = 1;
-            fuel_refuel_tick++;
-            if (fuel_refuel_tick >= FUEL_REFUEL_EVERY) {
-                fuel_refuel_tick = 0;
 
-                /* Un pulso de recarga mientras haya contacto: el tiempo total
-                 * de contacto es lo que decide cuanta energia se carga. */
-                if (fuel <= (uint8_t)(FUEL_MAX - FUEL_REFUEL_STEP)) {
-                    fuel = (uint8_t)(fuel + FUEL_REFUEL_STEP);
-                } else {
-                    fuel = FUEL_MAX;
-                }
-
-                if (fuel == FUEL_MAX) {
-                    /* Deposito lleno: el bidon se ha agotado. */
-                    fuel_active = 0;
-                    fuel_touching = 0;
+            /* Con el estanque a tope no se suma nada ni se pinguea (no hay
+             * pulso, asi que no hay sonido) pero el contacto se sigue
+             * reconociendo. */
+            if (fuel < FUEL_MAX) {
+                fuel_refuel_tick++;
+                if (fuel_refuel_tick >= FUEL_REFUEL_EVERY) {
                     fuel_refuel_tick = 0;
-                    score += SCORE_FUEL;
-                    snd_fuel();
+                    if (fuel <= (uint8_t)(FUEL_MAX - FUEL_REFUEL_STEP)) {
+                        fuel = (uint8_t)(fuel + FUEL_REFUEL_STEP);
+                    } else {
+                        fuel = FUEL_MAX;
+                    }
+                    /* UN PING POR PULSO: mas frames de contacto = mas pings.
+                     * Rozar el bidon da uno o dos; sobrevolarlo da una rafaga,
+                     * que es la proporcion que el jugador percibe. */
+                    snd_fuel_ping();
                 }
+            } else {
+                fuel_refuel_tick = 0;
             }
         } else if (fuel_touching) {
-            /* Ha dejado de tocarlo: lo cargado se queda y el bidon se da por
-             * recogido (no se puede volver a sorber). */
-            fuel_active = 0;
+            /* Ha dejado de tocarlo: lo cargado SE QUEDA y el bidon SIGUE en el
+             * rio. Solo se cierra la racha de contacto, no se puntua ni se
+             * retira el bidon. */
             fuel_touching = 0;
             fuel_refuel_tick = 0;
-            score += SCORE_FUEL;
-            snd_fuel();
         }
-    } else if (!fuel_active) {
+    } else {
         fuel_touching = 0;
         fuel_refuel_tick = 0;
     }
@@ -2396,6 +2425,19 @@ static void update_fuel(void) {
  * Cada FUEL_DRAIN_EVERY frames se pierde 1 unidad de combustible. Si llega a
  * 0, se pierde una vida (o game over).
  * =========================================================================== */
+/* Vuelca a las direcciones de diagnostico ($03E5-$03EA) el estado de la
+ * recarga. Se llama una vez por frame desde el bucle principal, ANTES de
+ * cualquier salida temprana (esperando_fire, game over), para que /ram.bin
+ * nunca devuelva valores viejos de un frame o de una partida anterior. */
+static void dbg_dump_fuel(void) {
+    DBG_FUEL    = fuel;
+    DBG_FUEL_ON = fuel_active;
+    DBG_TICK    = fuel_refuel_tick;
+    DBG_TOUCH   = fuel_touching;
+    DBG_PX      = (uint8_t)plane_x;
+    DBG_FX      = fuel_x;
+}
+
 static void update_fuel_gauge(void) {
     if (game_over) return;
 
@@ -2719,6 +2761,10 @@ int main(void) {
     while (!quit_flag) {
         vid_wait_vblank();
         perf_begin();
+
+        /* Diagnostico: volcar siempre, antes de las salidas tempranas, para que
+         * las lecturas por /ram.bin sean del frame actual. */
+        dbg_dump_fuel();
 
         /* 0) Esperando FIRE (inicio de partida o tras un choque): el avion esta
          * fijo en el punto de partida y el rio NO avanza. Se arranca al disparar. */

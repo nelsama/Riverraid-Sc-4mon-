@@ -42,8 +42,23 @@
 /* Duraciones (en frames) de los efectos con temporizador. */
 #define SHOOT_FRAMES    6   /* disparo (sweep descendente) */
 #define EXPLODE_FRAMES 20   /* explosion / choque          */
-#define FUEL_FRAMES    10   /* recoger combustible         */
 #define GAMEOVER_FRAMES 60  /* melodina de game over       */
+
+/* PING de repostaje: "golpe en un vaso". Ver snd_fuel_ping().
+ *
+ *   TINK_GATE  = frames con el GATE alto (lo que dura el impulso audible).
+ *   TINK_SPACE = frames MINIMOS entre dos pings. Es mayor que TINK_GATE para
+ *                que el sonido se apague del todo antes de empezar el
+ *                siguiente: si se solapasen sonaria un tono continuo, que es
+ *                justo lo que hay que evitar.
+ *
+ *  (3 + 2) frames a 60 Hz = ~83 ms por tink: el punto medio. Con 5 frames
+ *  el golpe era mas largo pero cabian menos en una pasada por el bidon; con 2
+ *  solo pasaba el transitorio y sonaba a crujido. 3 deja oir el TONO y caben
+ *  bastantes por sobrevuelo. */
+#define TINK_GATE   3
+#define TINK_SPACE  5
+#define TINK_RATE   ((uint8_t)((TINK_SPACE > TINK_GATE) ? (TINK_SPACE - TINK_GATE) : 0))
 
 /* ===========================================================================
  * ESCRITURA DE REGISTROS
@@ -67,7 +82,8 @@ static void sid_pw(uint16_t base, uint16_t pw) {
  * ESTADO
  * =========================================================================== */
 static uint8_t  t_v2;           /* disparo / explosion */
-static uint8_t  t_v3;           /* combustible / game over */
+static uint8_t  t_v3;           /* tink de repostaje / game over */
+static uint8_t  tink_space;     /* frames que faltan para el siguiente tink */
 static uint8_t  engine_on;      /* 1 = motor sonando (voz 1) */
 static uint16_t engine_freq;    /* frecuencia actual del motor */
 static uint16_t shoot_freq;     /* frecuencia actual del sweep del disparo */
@@ -95,6 +111,7 @@ static void snd_init(void) {
     sid_wr(SID_V3 + 5, 0); sid_wr(SID_V3 + 6, 0);
     SID_MODE_VOL = 0x0F;       /* filtro off + volumen master maximo */
     t_v2 = t_v3 = 0;
+    tink_space = 0;
     shoot_freq = 0;
     engine_on = 0;
     engine_freq = 0;
@@ -184,15 +201,44 @@ static void snd_explode(void) {
     t_v2 = EXPLODE_FRAMES;
 }
 
-/* Recoger combustible: blip triangular corto (voz 3). */
-static void snd_fuel(void) {
-    if (v3_is_gameover && t_v3) return;
-    sid_wr(SID_V3 + 5, 0x09);
-    sid_wr(SID_V3 + 6, 0x00);
-    sid_freq(SID_V3, 0x5800);
-    sid_wr(SID_V3 + 4, WF_TRI | GATE);
-    v3_is_gameover = 0;
-    t_v3 = FUEL_FRAMES;
+/* PING de repostaje: golpe seco en un vaso (voz 3).
+ *
+ * Se llama UNA VEZ POR PULSO de recarga, no por frame: cuantos mas frames de
+ * contacto, mas golpes seguidos se oyen.
+ *
+ * ENVOLVENTE "tink": ataque 0 (sube al instante) y decay rapido, y el gate
+ * se baja a los TINK_GATE frames. Ataque 0 + impulso corto da el golpe seco;
+ * el decay NO es 0 porque con caida instantanea la voz se queda sin nivel
+ * audible y lo que se oye es el transitorio del gate, que suena a CRUJIDO.
+ * Con decay 1 la caida es rapidisima pero sigue siendo un tono definido.
+ *
+ * VOLUMEN: el SID solo tiene un volumen GLOBAL ($D418), asi que el volumen de
+ * cada voz se regula con la envolvente. Antes el tink tenia sustain 0: el
+ * ataque lo ponia a tope y el decay lo desplomaba en el mismo frame, asi que
+ * se oia muy flojo (solo quedaba el pico del ataque). Con sustain 8/15 el
+ * tono se mantiene audible durante todo el impulso y suena claramente mas
+ * fuerte, sin tocar el volumen de los demas efectos.
+ *
+ * TONO: 0x7E00 es casi el techo del rango de frecuencia del SID (16 bits). Se
+ * busca el tic agudo de un cristal: cuanto mas alto, mas "tink" y menos
+ * "bip". Si SUENA demasiado fino, bajar a 0x7000 o 0x6800.
+ *
+ * La onda es TRIANGULAR porque en el SID es la mas limpia de las tres: sin
+ * armonicos impares duros del pulso y sin el ruido del noise. Da un tink
+ * brillante, no un chasquido.
+ *
+ * Si el tink anterior AUN no ha acabado (TINK_RATE frames de espera) se
+ * ignora: asi los golpes no se solapan y cada uno se oye separado. */
+static void snd_fuel_ping(void) {
+    if (v3_is_gameover) return;          /* no pisar la melodia de game over */
+    if (t_v3) return;                    /* el anterior aun suena: esperar */
+
+    sid_wr(SID_V3 + 5, 0x18);            /* ataque 1, decay 8 (no se apaga)  */
+    sid_wr(SID_V3 + 6, 0x80);            /* sustain 8/15 (volumen audible)   */
+    sid_freq(SID_V3, 0x8F00);            /* casi el techo: tic de cristal    */
+    sid_wr(SID_V3 + 4, WF_TRI | GATE);   /* dispara el tink                  */
+    t_v3 = TINK_GATE;                    /* gate alto TINK_GATE frames       */
+    tink_space = TINK_RATE;              /* y espera antes del siguiente     */
 }
 
 /* Game over: tono triangular descendente largo (voz 3). */
@@ -221,16 +267,29 @@ static void snd_update(void) {
         }
     }
 
-    /* Voz 3: combustible (blip) o game over. */
+    /* Voz 3: un TINK de repostaje, o la melodia de game over. */
     if (t_v3) {
         t_v3--;
         if (t_v3 == 0) {
-            sid_wr(SID_V3 + 4, 0);
-            v3_is_gameover = 0;
+            if (v3_is_gameover) {
+                sid_wr(SID_V3 + 4, 0);
+                v3_is_gameover = 0;
+            } else {
+                /* Fin del impulso: bajar el GATE. Con sustain 8 el sonido NO se
+                 * apaga solo, asi que hace falta un RELEASE corto (sustain 8,
+                 * release 4 = 3 frames) para que caiga limpio y no de un
+                 * click. El release sigue corriendo aunque el gate ya este a
+                 * 0: es lo que deja la cola corta del golpe. */
+                sid_wr(SID_V3 + 6, 0x84);   /* sustain 8, release 4 */
+                sid_wr(SID_V3 + 4, WF_TRI);
+            }
         } else if (v3_is_gameover) {
             sid_freq(SID_V3, (uint16_t)(0x4000 - (GAMEOVER_FRAMES - t_v3) * 0x0100));
         }
     }
+
+    /* Separacion entre tinks: mientras no llegue a 0 no empieza el siguiente. */
+    if (tink_space) tink_space--;
 }
 
 #endif /* FASTSOUND_H */
