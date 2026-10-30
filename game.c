@@ -222,7 +222,18 @@ static uint8_t  scroll_step;
 #define BULLET_H       6
 #define BULLET_HIT_X(i) ((uint16_t)(bullet_x[i] + BULLET_OFF_X))
 #define SPR_BOOM       5
-#define SPR_BOOM_PAT   10     /* 10 y 11 = 2 frames de explosion    */
+/* OJO: los 3 patrones de la explosion tienen que caer en indices LIBRES.
+ * Antes eran 10, 11 y 12, y el 12 es SPR_PLANE_PAT: el tercer frame del fuego
+ * machacaba el dibujo del avion y en vuelo normal se veia un anillo blanco en
+ * lugar del avion. 16..41 estan libres (9 heli, 13 barco, 14 bala, 15 bidon y
+ * 42..54 el HUD). */
+#define SPR_BOOM_PAT   16     /* 16, 17 y 18 = 3 frames de explosion */
+#define SPR_BOOM_FRAMES 3     /* patrones distintos                    */
+/* La explosion del AVION usa el mismo sprite 5 y los mismos 3 patrones, pero
+ * se dibuja desde draw_plane() y con un temporizador propio. 36 frames (0,6 s
+ * a 60 Hz) es lo que tarda en verse el fogonazo, la bola y el humo; antes de
+ * eso no se deja reaparecer, para que el choque se "lea" en pantalla. */
+#define PLANE_BLAST_FRAMES 36
 
 /* Patrones del mosaico del avion (16x16). */
 #define PAT_PLANE_TL 0     /* el avion vuelve a ser un solo sprite (patron 0) */
@@ -313,6 +324,11 @@ static uint8_t   fire_cooldown;
 /* Flag de muerte del avion (parpadeo breve antes de reubicar). */
 static uint8_t   plane_dead;
 static uint8_t   plane_dead_frames;
+/* Explosion del avion: frames que le quedan y su posicion en el momento del
+ * choque. Se dibuja DONDE murio el avion, no donde reaparece. */
+static uint8_t   plane_blast;
+static uint16_t  plane_blast_x;
+static uint8_t   plane_blast_y;
 static uint8_t   esperando_fire;   /* 1 = avion fijo, rio parado, espera FIRE */
 
 /* Estado del juego. */
@@ -456,9 +472,14 @@ static const uint8_t tile_water2_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x
 /* AVION del jugador (8x8 a ESCALA 2x => 16x16 en pantalla).
  * Caza amarillo visto desde arriba, morro arriba, como el arcade.
  * 3 = amarillo, 1 = amarillo oscuro. */
-/* Explosion: dos frames (estrella abierta y cerrada). Indice 3. */
+/* Explosion del avion: 3 frames que crecen y se apagan, como el arcade.
+ *   10 = estrella de chispas (primer instante)
+ *   11 = bola llena (el fogonazo)
+ *   12 = anillo abierto (el humo que se deshace)
+ * Indice 3 del sprite. Sale a escala 2x, o sea 16x16 en pantalla. */
 static const uint8_t spr_boom_p0[8]  = { 0x81,0x42,0x24,0x18,0x18,0x24,0x42,0x81 };
 static const uint8_t spr_boom2_p0[8] = { 0x00,0x6C,0xFE,0xFE,0xFE,0xFE,0x6C,0x00 };
+static const uint8_t spr_boom3_p0[8] = { 0x3C,0x7E,0xE7,0xC3,0xC3,0xE7,0x7E,0x3C };
 
 /* --- DIGITOS 0..9 (8x8) para el HUD. Un solo color (indice 3). --- */
 static const uint8_t hud_digit[10][8] = {
@@ -1365,6 +1386,7 @@ static void load_patterns(void) {
     fv_load_spr_pattern(SPR_FUEL_PAT,   spr_fuel_p0,   spr_fuel_p1);
     fv_load_spr_pattern(SPR_BOOM_PAT,      spr_boom_p0,  spr_boom_p0);
     fv_load_spr_pattern((uint8_t)(SPR_BOOM_PAT + 1), spr_boom2_p0, spr_boom2_p0);
+    fv_load_spr_pattern((uint8_t)(SPR_BOOM_PAT + 2), spr_boom3_p0, spr_boom3_p0);
 
     /* Patrones del HUD (digitos, icono de vida y celdas de la barra).
      * Sin escala: un patron por pieza, todos por debajo de 64. */
@@ -1481,6 +1503,7 @@ static void setup_video(void) {
     fire_cooldown = 0;
     plane_dead = 0;
     plane_dead_frames = 0;
+    plane_blast = 0;
     esperando_fire = 1;       /* avion fijo al empezar; arranca con FIRE */
 
     /* Estado del deposito de combustible. */
@@ -1520,17 +1543,42 @@ static void draw_plane(void) {
     static uint16_t last_x = 0xFFFF;
     static uint8_t  last_y = 0xFF;
     static uint8_t  last_flags = 0xFF;
-    uint8_t visible = 1;
+    static uint8_t  blast_visible;   /* 1 = el sprite 5 tiene el fuego puesto */
     uint8_t flags = (uint8_t)(SPR_PLANE_PAL | VC_SPR_SCALE2X);
 
     if (oam_cache_invalida) {
         last_x = 0xFFFF; last_y = 0xFF; last_flags = 0xFF;
     }
 
-    /* Si esta muerto, PARPADEA (se dibuja/oculta alternando) y no se mueve. */
-    if (plane_dead && (plane_dead_frames & 4)) visible = 0;
+    /* EXPLOSION: mientras dura, en el sitio del avion se ve el fuego y el
+     * avion NO se dibuja. Antes el avion simplemente parpadeaba, que no se lee
+     * como un choque. Los 3 patrones van de fogonazo a humo. */
+    if (plane_blast) {
+        uint8_t t = (uint8_t)(PLANE_BLAST_FRAMES - plane_blast);
+        uint8_t f = (uint8_t)(t / (PLANE_BLAST_FRAMES / SPR_BOOM_FRAMES));
+        if (f >= SPR_BOOM_FRAMES) f = (uint8_t)(SPR_BOOM_FRAMES - 1);
 
-    if (!visible) {
+        fv_sprite_disable(SPR_PLANE);
+        last_flags = 0xFE;
+
+        fv_sprite_move(SPR_BOOM, plane_blast_x, plane_blast_y,
+                       SPR_BOOM_PAL | VC_SPR_SCALE2X);
+        fv_oam(SPR_BOOM, VC_OAM_TILE, (uint8_t)(SPR_BOOM_PAT + f));
+        blast_visible = 1;
+        return;
+    }
+
+    /* Si esta muerto y ya no hay fuego, se apaga el sprite del fuego y no se
+     * dibuja el avion: se espera a que el jugador pulse FIRE.
+     *
+     * OJO: hay que APAGAR el sprite de la explosion. Si solo se deja de
+     * escribir, el OAM conserva el ultimo patron del fuego y en el punto del
+     * choque queda un circulo rojo fijo mientras se espera el FIRE. */
+    if (plane_dead) {
+        if (blast_visible) {
+            fv_sprite_disable(SPR_BOOM);
+            blast_visible = 0;
+        }
         if (last_flags != 0xFE) {
             fv_sprite_disable(SPR_PLANE);
             last_flags = 0xFE;
@@ -1847,13 +1895,20 @@ static uint8_t plane_on_bank(uint16_t x, uint8_t y) {
     return 0;
 }
 
-/* Muerte del avion: resta una vida, reproduce la explosion y activa el
- * parpadeo breve. Tras el parpadeo se reubica (o termina la partida). */
+/* Muerte del avion: resta una vida, dibuja la EXPLOSION en el sitio del
+ * choque y, cuando el fuego se apaga, deja el avion listo para reaparecer. */
 static void plane_hit(void) {
     if (plane_dead) return;
     plane_dead = 1;
     plane_dead_frames = 0;
     snd_explode();
+
+    /* La explosion se ancla DONDE esta el avion ahora: si se dibujara en
+     * plane_x/plane_y tras llamar a plane_place_safe() saldria en el punto de
+     * reaparicion, que es justo donde el jugador no ha chocado. */
+    plane_blast_x = plane_x;
+    plane_blast_y = plane_y;
+    plane_blast = PLANE_BLAST_FRAMES;
 
     /* La recarga en curso se cancela: el bidon no queda "a medias". */
     fuel_touching = 0;
@@ -1869,8 +1924,9 @@ static void plane_hit(void) {
         return;
     }
 
-    /* El avion vuelve YA al punto de partida y el rio se para hasta que se
-     * pulse FIRE: no sigue andando mientras se pierde una vida. */
+    /* El avion vuelve al punto de partida y el rio se para hasta que se pulse
+     * FIRE. La explosion se sigue viendo durante PLANE_BLAST_FRAMES porque
+     * draw_plane() dibuja el fuego mientras plane_blast no llegue a 0. */
     gen_restore_checkpoint();
     plane_place_safe();
     esperando_fire = 1;
@@ -2377,8 +2433,16 @@ static void advance_scroll(void) {
     {
         uint32_t fila_nueva = (uint32_t)((scroll_total + scroll_step) >> 3) + 2;
 
-        if (fila_nueva > world_row) {
-            world_row = fila_nueva;
+        /* OJO: hay que generar TODAS las filas que falten, no solo la ultima.
+         *
+         * Al acelerar el scroll avanza mas de 8 px en un frame (scroll_speed
+         * llega a SCROLL_MAX = 16, o sea scroll_step = 2), asi que fila_nueva
+         * salta DOS filas. Generando solo una, la intermedia se quedaba con el
+         * contenido del barrido anterior: aparecia una FRANJA HORIZONTAL de
+         * agua vieja cruzando el cesped. Con velocidad baja no se veia nunca
+         * porque scroll_step es 0 o 1. */
+        while (world_row < fila_nueva) {
+            world_row++;
             generate_world_row(world_row);
         }
     }
@@ -2414,6 +2478,7 @@ static void reset_game(void) {
      * plane_place_safe() lee el perfil river_l/river_r de la fila. */
     plane_dead = 0;
     plane_dead_frames = 0;
+    plane_blast = 0;
     esperando_fire = 1;       /* avion fijo al reiniciar; arranca con FIRE */
 
     /* Balas, barco, deposito. */
@@ -2574,6 +2639,10 @@ int main(void) {
         /* 0) Esperando FIRE (inicio de partida o tras un choque): el avion esta
          * fijo en el punto de partida y el rio NO avanza. Se arranca al disparar. */
         if (esperando_fire) {
+            /* La explosion del avion sigue corriendo aunque el rio este parado:
+             * es lo que se ve antes de que el jugador pueda volver a empezar. */
+            if (plane_blast) plane_blast--;
+
             if (fire_pressed()) {
                 esperando_fire = 0;
                 /* OJO: sin esto el avion queda INVULNERABLE. plane_hit() pone
@@ -2599,7 +2668,11 @@ int main(void) {
         /* 1) Leer entrada y mover el avion / disparar (solo si no hay game over). */
         if (!game_over) {
             read_input();
+            /* El rugido del motor sigue la velocidad: al acelerar (arriba) se
+             * oye mas agudo y ligero, al frenar (abajo) mas grave y pesado. */
+            snd_engine_speed(scroll_speed);
         }
+        if (plane_blast) plane_blast--;
 
         /* 1b) EL RIO SE MUEVE PRIMERO.
          *
@@ -2633,8 +2706,10 @@ int main(void) {
          * deja el HUD: el avion y los objetos deben desaparecer. */
         /* 3) Dibujo. En GAME OVER se apaga TODO (avión, objetos y HUD) para
          * que el texto del panel quede legible: los sprites del HUD tapaban
-         * parte del mensaje. */
-        if (!game_over) {
+         * parte del mensaje. Excepcion: la EXPLOSION final del avion se dibuja
+         * mientras dura, porque si no la ultima vida se pierde sin que se vea
+         * el choque. */
+        if (!game_over || plane_blast) {
             draw_plane();
             draw_bullets();
             draw_boat();

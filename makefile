@@ -70,7 +70,7 @@ $(BUILD_DIR)/dirs-stamp:
 	@mkdir -p $(BUILD_DIR) $(OUTPUT_DIR)
 	@touch $@
 
-$(BUILD_DIR)/game.o: $(BUILD_DIR)/dirs-stamp game.c include/video.h include/romapi.h include/sound.h include/joy.h include/perf.h
+$(BUILD_DIR)/game.o: $(BUILD_DIR)/dirs-stamp game.c include/video.h include/fastvideo.h include/romapi.h include/fastsound.h include/joy.h include/perf.h
 	$(CC) -c $(CFLAGS) -o $@ game.c
 
 $(BUILD_DIR)/perf.o: $(BUILD_DIR)/dirs-stamp perf.c include/perf.h include/romapi.h

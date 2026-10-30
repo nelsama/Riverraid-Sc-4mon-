@@ -69,9 +69,18 @@ static void sid_pw(uint16_t base, uint16_t pw) {
 static uint8_t  t_v2;           /* disparo / explosion */
 static uint8_t  t_v3;           /* combustible / game over */
 static uint8_t  engine_on;      /* 1 = motor sonando (voz 1) */
+static uint16_t engine_freq;    /* frecuencia actual del motor */
 static uint16_t shoot_freq;     /* frecuencia actual del sweep del disparo */
 static uint8_t  v2_is_explode;  /* 1 = la voz 2 suena explosion (no disparo) */
 static uint8_t  v3_is_gameover; /* 1 = la voz 3 suena game over */
+
+/* Frecuencia del ruido del motor para la velocidad MINIMA y MAXIMA del juego
+ * (las SCROLL_MIN/SCROLL_MAX de game.c). La diferencia es la que se oye como
+ * acelerar. Se pasan como 0..15 normalizado para no depender de esas macros. */
+#define SND_ENGINE_SLOW  0x0400
+#define SND_ENGINE_FAST  0x0E00
+#define SND_SPEED_MIN    4
+#define SND_SPEED_MAX    16
 
 /* ===========================================================================
  * API
@@ -88,17 +97,13 @@ static void snd_init(void) {
     t_v2 = t_v3 = 0;
     shoot_freq = 0;
     engine_on = 0;
+    engine_freq = 0;
     v2_is_explode = 0;
     v3_is_gameover = 0;
 }
 
-static void snd_silence(void) {
-    sid_wr(SID_V1 + 4, 0);
-    sid_wr(SID_V2 + 4, 0);
-    sid_wr(SID_V3 + 4, 0);
-    t_v2 = t_v3 = 0;
-    engine_on = 0;
-}
+/* (snd_silence y snd_random se eliminaron: no las llamaba nadie y el programa
+ * va justo de RAM; el enlazador ya avisaba de que no se usaban.) */
 
 /* Motor del avion: ruido grave continuo en la voz 1.
  *
@@ -110,9 +115,43 @@ static void snd_silence(void) {
 static void snd_engine_on(void) {
     sid_wr(SID_V1 + 5, 0x09);      /* ataque 0, decay 9 (baja despacio) */
     sid_wr(SID_V1 + 6, 0x57);      /* sustain 5/15, release 7           */
-    sid_freq(SID_V1, 0x0800);      /* ruido grave */
+    sid_freq(SID_V1, SND_ENGINE_SLOW);   /* velocidad normal de aqui */
     sid_wr(SID_V1 + 4, WF_NOISE | GATE);
     engine_on = 1;
+    engine_freq = SND_ENGINE_SLOW;
+}
+
+/* Ajusta el rugido del motor a la VELOCIDAD del avión.
+ *
+ * El motor es ruido en la voz 1: el ruido no tiene "tono", pero el filtro de
+ * salida del SID y el propio muestreo del LFSR de ruido hacen que una
+ * frecuencia MAS ALTA suene mas AGUDA y mas "soplada", y una mas BAJA mas
+ * grave y arrastrada. Es exactamente la sensacion que se busca: acelerar se
+ * oye como un avion que va mas rapido.
+ *
+ * `speed` es scroll_speed (SCROLL_MIN..SCROLL_MAX). El registro se reescribe
+ * solo cuando la frecuencia cambia, porque escribir en el SID fuera del VBLANK
+ * No es gratis. */
+static void snd_engine_speed(uint8_t speed) {
+    uint16_t f;
+
+    if (!engine_on) return;
+
+    /* Mapeo lineal: SCROLL_MIN -> SND_ENGINE_SLOW, SCROLL_MAX -> SND_ENGINE_FAST */
+    if (speed <= SND_SPEED_MIN) {
+        f = SND_ENGINE_SLOW;
+    } else if (speed >= SND_SPEED_MAX) {
+        f = SND_ENGINE_FAST;
+    } else {
+        f = (uint16_t)(SND_ENGINE_SLOW +
+                       (uint16_t)(speed - SND_SPEED_MIN) *
+                       (uint16_t)((SND_ENGINE_FAST - SND_ENGINE_SLOW) /
+                                  (SND_SPEED_MAX - SND_SPEED_MIN)));
+    }
+    if (f != engine_freq) {
+        engine_freq = f;
+        sid_freq(SID_V1, f);
+    }
 }
 
 static void snd_engine_off(void) {
@@ -164,18 +203,6 @@ static void snd_gameover(void) {
     sid_wr(SID_V3 + 4, WF_TRI | GATE);
     v3_is_gameover = 1;
     t_v3 = GAMEOVER_FRAMES;
-}
-
-/* Byte pseudoaleatorio a partir del oscilador de ruido de la voz 3 ($D41B).
- * Se pone la voz 3 en modo RUIDO SIN gate (no suena) y se lee su registro. */
-static uint8_t snd_random(void) {
-    uint8_t out;
-
-    sid_freq(SID_V3, 0xFFFF);
-    sid_wr(SID_V3 + 4, WF_NOISE);
-    out = SID_V3_OSC;
-    sid_wr(SID_V3 + 4, 0);
-    return out;
 }
 
 /* Tick por frame. */
