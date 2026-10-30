@@ -99,7 +99,9 @@ static uint8_t  scroll_step;
 #define HUD_RASTER_LINE0  24   /* banda superior = 3 filas (0 = margen, 1-2 HUD) */
 #define HUD_RASTER_LINE1  216  /* banda inferior empieza en linea 216 (filas 27-29) */
 
-/* Sprite del deposito de combustible. */
+/* Sprite del deposito de combustible. La paleta 3 se reprograma en
+ * setup_video(): el bidon se ve ROJO con la "F" BLANCA. Ver la tabla de
+ * paletas junto a SPR_PLANE_PAL, mas abajo. */
 #define SPR_FUEL       4
 #define SPR_FUEL_PAT   15
 #define SPR_FUEL_PAL   VC_SPPAL_3
@@ -241,11 +243,37 @@ static uint8_t  scroll_step;
 #define PAT_PLANE_BL 0
 #define PAT_PLANE_BR 0
 
-#define SPR_PLANE_PAL  VC_SPPAL_1
-#define SPR_BOAT_PAL   VC_SPPAL_2
-#define SPR_HELI_PAL   VC_SPPAL_0
-#define SPR_BULLET_PAL VC_SPPAL_1
-#define SPR_BOOM_PAL   VC_SPPAL_3
+/* --- QUE PALETA USA CADA COSA -------------------------------------------
+ *
+ * Los nombres VC_SPPAL_0..3 de include/video.h son NEUTROS: describen el
+ * preset de fabrica (piel/marron/negro, azul/cian/blanco, ...), pero
+ * setup_video() REPROGRAMA varias entradas. Los colores que de verdad se ven
+ * son los de setup_video(), no los del preset. Resumen medido:
+ *
+ *   paleta | quien la usa                      | color 1        | color 2 | color 3
+ *   -------+-----------------------------------+----------------+---------+---------------
+ *      0   | helicoptero (slot 6)              | cian #22FFFF   | negro   | rojo #BB1100
+ *      1   | avion (0), bala (30-31), expl. (5)| #00FFFF        | #22AAEE | blanco #FFFFFF
+ *          | HUD (10-23)                       | (bala y HUD:   |         |
+ *          |                                   |  solo color 3) |         |
+ *      2   | barco (slot 8)                    | negro #000000  | azul    | rojo #BB0011
+ *      3   | BIDON (slot 4)                    | blanco #FFEEEE | naranja | rojo #DD1111
+ *          |                                   |                | (libre) |
+ *
+ * OJO con la paleta 3: el preset la anuncia como verde/naranja/blanco, pero
+ * setup_video() pisa el 3 con ROJO (ese rojo del bidon) y el 1 con blanco, y
+ * deja el naranja del 2 sin reprogramar. Como spr_fuel solo emite los indices
+ * 1 y 3, el bidon se ve ROJO con la "F" BLANCA. El naranja (indice 2) esta
+ * libre por si se quiere redibujar el bidon como en el arcade.
+ */
+#define SPR_PLANE_PAL  VC_SPPAL_1   /* avion: cian / azul / (no usa 3) */
+#define SPR_BOAT_PAL   VC_SPPAL_2   /* barco: negro / azul / rojo       */
+#define SPR_HELI_PAL   VC_SPPAL_0   /* heli:  cian / negro / rojo       */
+#define SPR_BULLET_PAL VC_SPPAL_1   /* bala:  solo el color 3 (blanco)  */
+/* La explosion usa la MISMA paleta que el avion: los tres patrones estan
+ * dibujados con los indices 1 (cian), 2 (azul) y 3 (blanco) de esa paleta, asi
+ * el fuego queda en la gama del avion en vez de en el rojo de la paleta 3. */
+#define SPR_BOOM_PAL   VC_SPPAL_1
 
 /* Balas del jugador (pool pequeño). */
 #define NBULLETS      2
@@ -323,7 +351,6 @@ static uint8_t   fire_cooldown;
 
 /* Flag de muerte del avion (parpadeo breve antes de reubicar). */
 static uint8_t   plane_dead;
-static uint8_t   plane_dead_frames;
 /* Explosion del avion: frames que le quedan y su posicion en el momento del
  * choque. Se dibuja DONDE murio el avion, no donde reaparece. */
 static uint8_t   plane_blast;
@@ -465,23 +492,36 @@ static const uint8_t tile_water2_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x
 /* ===========================================================================
  * PATRONES DE SPRITE
  * ===========================================================================
- * Regla: 0 = transparente. Para dar volumen se usan dos tonos
- * (3 = claro, 1 = oscuro) de la paleta de sprite del objeto.
+ * Regla: 0 = transparente. Para dar volumen se usan dos tonos de la paleta de
+ * sprite del objeto. Los colores concretos son los de setup_video(): los
+ * presets de include/video.h quedan pisados al arrancar. Cada bloque de aqui
+ * abajo dice el color FINAL de cada indice que ese patron emite.
  * =========================================================================== */
 
-/* AVION del jugador (8x8 a ESCALA 2x => 16x16 en pantalla).
- * Caza amarillo visto desde arriba, morro arriba, como el arcade.
- * 3 = amarillo, 1 = amarillo oscuro. */
-/* Explosion del avion: 3 frames que crecen y se apagan, como el arcade.
- *   10 = estrella de chispas (primer instante)
- *   11 = bola llena (el fogonazo)
- *   12 = anillo abierto (el humo que se deshace)
- * Indice 3 del sprite. Sale a escala 2x, o sea 16x16 en pantalla. */
-static const uint8_t spr_boom_p0[8]  = { 0x81,0x42,0x24,0x18,0x18,0x24,0x42,0x81 };
-static const uint8_t spr_boom2_p0[8] = { 0x00,0x6C,0xFE,0xFE,0xFE,0xFE,0x6C,0x00 };
-static const uint8_t spr_boom3_p0[8] = { 0x3C,0x7E,0xE7,0xC3,0xC3,0xE7,0x7E,0x3C };
+/* Explosion: 3 patrones que crecen y se apagan, como el arcade. Los usan
+ * tanto el avion como los enemigos (barco y helicoptero comparten estos
+ * mismos patrones; solo cambia quien los lanza y el patron elegido).
+ *   16 = estrella de chispas (primer instante)
+ *   17 = bola llena (el fogonazo)
+ *   18 = anillo abierto (el humo que se deshace)
+ *
+ * USAN LA PALETA DEL AVION (VC_SPPAL_1):
+ *   1 = cian #00FFFF   2 = azul #22AAEE   3 = blanco #FFFFFF
+ * Escala 2x, o sea 16x16 en pantalla. El cian es el nucleo, el azul el borde
+ * del nucleo y el blanco la corona/onda.
+ *
+ * El AVION es spr_plane (mas abajo, en NAVES), no esta explosion: los dos
+ * comparten el slot 5 del OAM, por eso draw_boom() se aparta cuando el avion
+ * esta explotando. */
+static const uint8_t spr_boom_p0[8]  = { 0x00,0x00,0x10,0x10,0x00,0x00,0x10,0x00 };
+static const uint8_t spr_boom_p1[8]  = { 0x00,0x10,0x28,0x44,0x10,0x38,0x28,0x00 };
+static const uint8_t spr_boom2_p0[8] = { 0x00,0x38,0x6C,0x54,0x44,0x6C,0x38,0x00 };
+static const uint8_t spr_boom2_p1[8] = { 0x00,0x38,0x7C,0x6C,0x54,0x7C,0x28,0x00 };
+static const uint8_t spr_boom3_p0[8] = { 0x00,0x38,0x44,0x82,0x92,0x82,0x46,0x38 };
+static const uint8_t spr_boom3_p1[8] = { 0x00,0x38,0x44,0x92,0xAA,0x92,0x46,0x38 };
 
-/* --- DIGITOS 0..9 (8x8) para el HUD. Un solo color (indice 3). --- */
+/* --- DIGITOS 0..9 (8x8) para el HUD. Paleta 1, un solo color: indice 3 =
+ * blanco #FFFFFF. El color 0 es el hueco del digito (transparente). --- */
 static const uint8_t hud_digit[10][8] = {
     { 0x3C,0x66,0x6E,0x76,0x66,0x66,0x3C,0x00 }, /* 0 */
     { 0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0x00 }, /* 1 */
@@ -495,10 +535,12 @@ static const uint8_t hud_digit[10][8] = {
     { 0x3C,0x66,0x66,0x3E,0x06,0x66,0x3C,0x00 }  /* 9 */
 };
 
-/* Icono de vida: mini-avion. */
+/* Icono de vida: mini-avion. Paleta 1, indice 3 = blanco #FFFFFF. */
 static const uint8_t hud_lives_pat[8] = { 0x18,0x3C,0x7E,0xFF,0x18,0x18,0x18,0x00 };
 
-/* Celdas de la barra de combustible (llena / vacia). */
+/* Celdas de la barra de combustible (llena / vacia). Paleta 1:
+ *   llena = todo indice 3 (blanco #FFFFFF)
+ *   vacia = marco en indice 3 con el centro transparente (se ve el fondo) */
 static const uint8_t hud_bar_on[8]  = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
 static const uint8_t hud_bar_off[8] = { 0x81,0x81,0x81,0x81,0x81,0x81,0x81,0x81 };
 
@@ -509,35 +551,52 @@ static const uint8_t hud_bar_off[8] = { 0x81,0x81,0x81,0x81,0x81,0x81,0x81,0x81 
  * admite 3 colores utiles por sprite (indices 1,2,3; el 0 es transparente),
  * asi que los tres caben. La paleta es POR SPRITE, de ahi que cada uno tenga
  * sus entradas con sus colores.
+ *
+ * Los colores que siguen son los FINALES (los de setup_video()), porque la
+ * paleta se reprograma al arrancar y los presets de video.h ya no valen.
  */
 
-/* AVION del jugador (hacia arriba): 1 = cian, 2 = azul. */
+/* AVION del jugador (hacia arriba, escala 2x => 16x16 en pantalla). Paleta 1.
+ *   1 = cian #00FFFF (fuselaje)   2 = azul #22AAEE (detalles)   3 = sin usar */
 static const uint8_t spr_plane_p0[8] = { 0x10,0x38,0x6C,0xC6,0x92,0x38,0x6C,0x00 };
 static const uint8_t spr_plane_p1[8] = { 0x00,0x00,0x10,0x10,0x00,0x00,0x10,0x54 };
 
-/* BARCO (hacia la izquierda): 1 = negro, 2 = azul, 3 = rojo. */
+/* BARCO (hacia la izquierda, escala 2x). Paleta 2.
+ *   1 = negro #000000 (casco)   2 = azul #0000FF (quilla)   3 = rojo #BB0011 */
 static const uint8_t spr_boat_p0[8] = { 0x00,0x04,0x0C,0x3E,0x00,0x00,0x3E,0x00 };
 static const uint8_t spr_boat_p1[8] = { 0x00,0x00,0x00,0x00,0xFF,0x7F,0x3E,0x00 };
 
-/* HELICOPTERO (hacia la izquierda): 1 = cian, 2 = negro, 3 = rojo. */
-static const uint8_t spr_heli_p0[8] = { 0xFE,0x10,0x00,0x00,0xFF,0x00,0x00,0x00 };
-static const uint8_t spr_heli_p1[8] = { 0x00,0x00,0x39,0xFF,0xFF,0xFC,0x10,0x7C };
+/* HELICOPTERO (hacia la izquierda, escala 2x). Paleta 0 SIN CAMBIOS. Arte
+ * nuevo del usuario (colores #29F6F5, #B51100 y negro). Los tres caen
+ * exactamente en los colores que la paleta 0 ya tiene:
+ *   #29F6F5 -> RGB444 (2,F,F) = cian, ya en el indice 1
+ *   #000000 -> RGB444 (0,0,0) = negro, ya en el indice 2
+ *   #B51100 -> RGB444 (B,1,0) = rojo,  ya en el indice 3 */
+static const uint8_t spr_heli_p0[8] = { 0x00,0xFE,0x40,0x00,0xFF,0x00,0x00,0x00 };
+static const uint8_t spr_heli_p1[8] = { 0x00,0x00,0x79,0xFF,0xFF,0x10,0x7C,0x00 };
 /* --- FIN NAVES --- */
-/* Bala del jugador: 2x6 vertical, color claro (indice 3). */
+/* Bala del jugador: 2x6 vertical, escala 1x. Paleta 1, solo el indice 3 =
+ * blanco #FFFFFF; los indices 1 y 2 no se emiten. */
 static const uint8_t spr_bullet_p0[8] = { 0x18,0x18,0x18,0x18,0x18,0x18,0x00,0x00 };
 static const uint8_t spr_bullet_p1[8] = { 0x18,0x18,0x18,0x18,0x18,0x18,0x00,0x00 };
 
-/* Deposito de combustible: bidon con asa y "F", como el arcade.
- *    .####.
- *    #....#
- *    #.FF.#
- *    #.F..#
- *    #.FF.#
- *    #....#
- *    .####.
- * 3 = contorno, 1 = relleno. */
-static const uint8_t spr_fuel_p0[8] = { 0x7E,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x00 };
-static const uint8_t spr_fuel_p1[8] = { 0x7E,0x5A,0x4E,0x5E,0x4E,0x5E,0x7E,0x00 };
+/* Deposito de combustible: bidon, arte nuevo del usuario. Paleta 3 SIN CAMBIOS.
+ * El dibujo original venia en azul/blanco; se ha REMAPEADO a los colores que
+ * la paleta 3 ya tenia, sin tocar la paleta:
+ *   #05A4FA (azul claro)  -> indice 2 = naranja #FFDD88
+ *   #0505FA (azul oscuro) -> indice 3 = rojo    #DD1111
+ *   #FFFFFF (blanco)      -> indice 1 = blanco  #FFEEEE
+ * Forma (2 = naranja, 3 = rojo, 1 = blanco):
+ *    ..2222..
+ *    .322223.
+ *    .233332.
+ *    .211122.
+ *    .312223.
+ *    .211332.
+ *    .312223.
+ *    ..3333.. */
+static const uint8_t spr_fuel_p0[8] = { 0x00,0x42,0x3C,0x38,0x62,0x3C,0x62,0x3C };
+static const uint8_t spr_fuel_p1[8] = { 0x3C,0x7E,0x7E,0x46,0x5E,0x4E,0x5E,0x3C };
 
 /* ===========================================================================
  * PROTOTIPOS (funciones usadas antes de su definicion)
@@ -882,7 +941,12 @@ static uint8_t gen_curve_toward(uint8_t cur, uint8_t target) {
  * canal de 6 celdas, casi una rendija. El documento asume una pantalla de 100
  * unidades, no nuestras 27 celdas; aqui se reparte en el rango jugable con una
  * TABLA: la escala lineal dejaba los estrechamientos casi sin usar y el cauce
- * pasaba casi siempre por los mismos dos anchos. */
+ * pasaba casi siempre por los mismos dos anchos.
+ *
+ * SE DEJA COMO TABLA y no como formula: se probo `GEN_W_MIN + (bits*13)/15` y
+ * difiere en 7 de los 16 valores (9,9,10,11... frente a 9,10,11,12...), o sea
+ * que CAMBIA EL TRAZADO DEL RIO. Son 16 bytes y el comportamiento es el
+ * validado; no merece la pena arriesgar la forma del cauce por ellos. */
 static const uint8_t gen_width_tab[16] = {
     9, 10, 11, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19, 20, 21, 22
 };
@@ -1384,9 +1448,9 @@ static void load_patterns(void) {
     fv_load_spr_pattern(SPR_HELI_PAT,  spr_heli_p0,  spr_heli_p1);
     fv_load_spr_pattern(SPR_BULLET_PAT, spr_bullet_p0, spr_bullet_p1);
     fv_load_spr_pattern(SPR_FUEL_PAT,   spr_fuel_p0,   spr_fuel_p1);
-    fv_load_spr_pattern(SPR_BOOM_PAT,      spr_boom_p0,  spr_boom_p0);
-    fv_load_spr_pattern((uint8_t)(SPR_BOOM_PAT + 1), spr_boom2_p0, spr_boom2_p0);
-    fv_load_spr_pattern((uint8_t)(SPR_BOOM_PAT + 2), spr_boom3_p0, spr_boom3_p0);
+    fv_load_spr_pattern(SPR_BOOM_PAT,      spr_boom_p0,  spr_boom_p1);
+    fv_load_spr_pattern((uint8_t)(SPR_BOOM_PAT + 1), spr_boom2_p0, spr_boom2_p1);
+    fv_load_spr_pattern((uint8_t)(SPR_BOOM_PAT + 2), spr_boom3_p0, spr_boom3_p1);
 
     /* Patrones del HUD (digitos, icono de vida y celdas de la barra).
      * Sin escala: un patron por pieza, todos por debajo de 64. */
@@ -1418,45 +1482,65 @@ static void setup_video(void) {
     vid_set_bgcolor(VC_RGB444(0x2, 0x6, 0xF));
 
     /* Paleta 0 (PAL_MENU): solo la usa el panel de GAME OVER.
-     * 1 = NEGRO (fondo opaco del panel), 3 = BLANCO (texto de la fuente). */
+     *   1 = NEGRO #000000 (fondo opaco)   2 = BLANCO #FFFFFF (sin uso conocido)
+     *   3 = BLANCO #FFFFFF (texto: la fuente pinta SIEMPRE el 3) */
     vid_pal_set_bg(PAL_MENU, 1, VC_RGB444(0x0, 0x0, 0x0));
     vid_pal_set_bg(PAL_MENU, 2, VC_RGB444(0xF, 0xF, 0xF));
     vid_pal_set_bg(PAL_MENU, 3, VC_RGB444(0xF, 0xF, 0xF));
 
-    /* Paleta 1: agua. 1 = azul, 2 = oleaje, 3 = azul claro. */
+    /* ---- PALETAS DE FONDO (tile) ----
+     * Los presets de video.h NO valen: aqui van los colores FINALES, con el hex
+     * al lado. Solo se escribe lo que cambia. El indice 0 es transparente y
+     * deja ver el BG_COLOR (azul del rio, arriba). */
+
+    /* Paleta 1 (PAL_WATER): agua. 1 = azul #0022AA, 2 = oleaje #1144EE, 3 = azul claro #2266FF. */
     vid_pal_set_bg(PAL_WATER, 1, VC_RGB444(0x0, 0x2, 0xA));
     vid_pal_set_bg(PAL_WATER, 2, VC_RGB444(0x1, 0x4, 0xE));   /* oleaje */
     vid_pal_set_bg(PAL_WATER, 3, VC_RGB444(0x2, 0x6, 0xF));
 
-    /* Paleta 2 (ISLA y tierra): 1 = arena, 2 = vegetacion, 3 = agua. El 3 debe
-     * ser el MISMO azul del cauce para que la isla no tenga borde negro. */
+    /* Paleta 2 (PAL_ISLAND y tierra): 1 = arena #DD8833, 2 = vegetacion #007700,
+     * 3 = agua #2266FF. El 3 debe ser el MISMO azul del cauce para que la isla
+     * no tenga borde negro. */
     vid_pal_set_bg(PAL_ISLAND, 1, VC_RGB444(0xD, 0x8, 0x3));
     vid_pal_set_bg(PAL_ISLAND, 2, VC_RGB444(0x0, 0x7, 0x0));
     vid_pal_set_bg(PAL_ISLAND, 3, VC_RGB444(0x2, 0x6, 0xF));
 
-    /* Paleta 3 (cesped y orillas): 1 = verde claro (continuidad con el cesped),
-     * 2 = arena, 3 = verde oscuro. El agua de la orilla es transparente
+    /* Paleta 3 (cesped y orillas): 1 = verde claro #00AA00, 2 = arena #DD8833,
+     * 3 = verde oscuro #006600. El agua de la orilla es transparente
      * (indice 0) y deja ver el BG_COLOR, que es el mismo azul del rio. */
     vid_pal_set_bg(PAL_EDGE, 1, VC_RGB444(0x0, 0xA, 0x0));
     vid_pal_set_bg(PAL_EDGE, 2, VC_RGB444(0xD, 0x8, 0x3));
     vid_pal_set_bg(PAL_EDGE, 3, VC_RGB444(0x0, 0x6, 0x0));
 
-    /* La franja de arena usa la misma paleta (indice 1 = arena). */
-    /* Avion: amarillo vivo (3) y amarillo oscuro (1). */
+    /* ---- PALETAS DE SPRITE: solo se escriben las entradas que CAMBIAN ----
+     * Las que no aparecen se quedan con el preset de include/video.h. El color
+     * 0 es siempre transparente y no se puede reprogramar. */
+
+    /* Paleta 1. Compartida por avion, bala, explosion y HUD. Aqui pasa a ser
+     *   1 = cian #00FFFF   2 = azul #22AAEE   3 = blanco #FFFFFF (preset) */
     vid_pal_set_spr(SPR_PLANE_PAL, 1, VC_RGB444(0x0, 0xF, 0xF));  /* cian */
     vid_pal_set_spr(SPR_PLANE_PAL, 2, VC_RGB444(0x2, 0xA, 0xE));  /* azul */
 
-    /* Barco: casco azul (1), cubierta roja (2), gris claro (3). */
+    /* Paleta 2. Solo el barco.
+     *   1 = negro #000000   2 = azul #0000FF   3 = rojo #BB0011 */
     vid_pal_set_spr(SPR_BOAT_PAL,  1, VC_RGB444(0x0, 0x0, 0x0));  /* negro */
     vid_pal_set_spr(SPR_BOAT_PAL,  2, VC_RGB444(0x0, 0x0, 0xF));  /* azul  */
     vid_pal_set_spr(SPR_BOAT_PAL,  3, VC_RGB444(0xB, 0x0, 0x1));  /* rojo  */
 
-    /* Helicoptero: cuerpo azul (1), rotor beige (2), azul claro (3). */
+    /* Paleta 0. Solo el helicoptero.
+     *   1 = cian #22FFFF   2 = negro #000000   3 = rojo #BB1100 */
     vid_pal_set_spr(SPR_HELI_PAL,  1, VC_RGB444(0x2, 0xF, 0xF));  /* cian  */
     vid_pal_set_spr(SPR_HELI_PAL,  2, VC_RGB444(0x0, 0x0, 0x0));  /* negro */
     vid_pal_set_spr(SPR_HELI_PAL,  3, VC_RGB444(0xB, 0x1, 0x0));  /* rojo  */
 
-    vid_pal_set_spr(SPR_FUEL_PAL,  3, VC_RGB444(0xD, 0x1, 0x1));  /* rojo  */
+    /* Paleta 3. Solo el bidon de combustible.
+     *   1 = blanco #FFEEEE (la "F")   2 = naranja #FF8800 (SIN USAR)   3 = rojo #DD1111
+     * El 3 se pisa a proposito: el preset lo dejaria blanco y el bidon
+     * quedaria invisible sobre el agua. Alli el rojo lo saca setup_video(), no
+     * la ROM ni el preset. El naranja del 2 queda libre: si algun dia se
+     * redibuja spr_fuel para que emita ese indice, el bidon saldra naranja sin
+     * tocar la paleta. */
+    vid_pal_set_spr(SPR_FUEL_PAL,  3, VC_RGB444(0xD, 0x1, 0x1));  /* rojo (cuerpo) */
     vid_pal_set_spr(SPR_FUEL_PAL,  1, VC_RGB444(0xF, 0xE, 0xE));  /* blanco (F/asa) */
 
     load_patterns();
@@ -1502,7 +1586,6 @@ static void setup_video(void) {
     for (row = 0; row < NBULLETS; row++) bullet_alive[row] = 0;
     fire_cooldown = 0;
     plane_dead = 0;
-    plane_dead_frames = 0;
     plane_blast = 0;
     esperando_fire = 1;       /* avion fijo al empezar; arranca con FIRE */
 
@@ -1665,8 +1748,14 @@ static void draw_fuel(void) {
     fv_oam(SPR_FUEL, VC_OAM_TILE, SPR_FUEL_PAT);
 }
 
-/* Explosion: parpadea entre sus 2 frames mientras dura. */
+/* Explosion: parpadea entre sus 2 frames mientras dura.
+ *
+ * OJO: comparte el sprite 5 con la EXPLOSION DEL AVION (la dibuja draw_plane).
+ * Si el avion esta ardiendo, aqui NO se toca el sprite: si se apagara, borraria
+ * el fuego del avion y la animacion no se veria nunca (el avion desaparecia y
+ * volvia sin fogonazo). */
 static void draw_boom(void) {
+    if (plane_blast) return;              /* el sprite 5 es del avion ahora */
     if (!boom_active) {
         fv_sprite_disable(SPR_BOOM);
         return;
@@ -1900,7 +1989,6 @@ static uint8_t plane_on_bank(uint16_t x, uint8_t y) {
 static void plane_hit(void) {
     if (plane_dead) return;
     plane_dead = 1;
-    plane_dead_frames = 0;
     snd_explode();
 
     /* La explosion se ancla DONDE esta el avion ahora: si se dibujara en
@@ -1924,12 +2012,16 @@ static void plane_hit(void) {
         return;
     }
 
-    /* El avion vuelve al punto de partida y el rio se para hasta que se pulse
-     * FIRE. La explosion se sigue viendo durante PLANE_BLAST_FRAMES porque
-     * draw_plane() dibuja el fuego mientras plane_blast no llegue a 0. */
+    /* El avion vuelve al punto de partida y espera. La explosion se sigue
+     * viendo durante PLANE_BLAST_FRAMES porque draw_plane() dibuja el fuego
+     * mientras plane_blast no llegue a 0.
+     *
+     * OJO: NO se pone esperando_fire aqui. El río sigue andando durante el
+     * fuego (el mundo no se congela en seco) y es AL APAGARSE cuando el avion
+     * queda quieto a la espera de FIRE; ver el bucle principal. */
     gen_restore_checkpoint();
     plane_place_safe();
-    esperando_fire = 1;
+    esperando_fire = 0;
     snd_engine_off();
 }
 
@@ -2323,26 +2415,19 @@ static void update_fuel_gauge(void) {
 }
 
 /* ===========================================================================
- * ANIMACION DEL OLEAJE (repartida entre frames)
+ * ANIMACION DEL OLEAJE
  * ===========================================================================
- * Alterna los dos patrones de agua en UNA fila por frame (rotando por las 32
- * del mapa). Coste por frame: 24 celdas, cabe de sobra en el VBLANK.
+ * DESACTIVADA (a proposito). Repintaba agua de filas VISIBLES y, medido con
+ * capturas, dejaba HUECOS: columnas con el tile anterior (panel de GAME OVER,
+ * agua suelta) en mitad del cauce, y manchas en el cesped. Ademas borraba la
+ * tierra central.
+ *
+ * El oleaje hay que hacerlo cambiando el PATRON del tile de agua (o con dos
+ * tiles alternando por bloques), NUNCA repintando celdas que el jugador esta
+ * viendo. Cuando se haga, que sea asi.
+ *
+ * La antigua version queda abajo en #if 0 como referencia.
  * =========================================================================== */
-static void update_water_anim(void) {
-    /* DESACTIVADA (a proposito): repinta agua de filas VISIBLES.
-     *
-     * Medido con capturas antes/despues de la escritura: mientras el juego
-     * repinta la fila nueva, esta animacion puede pasar por la misma fila de
-     * cinta y escribir en celdas a las que aun les falta el tile de la fila
-     * nueva. El resultado son HUECOS: columnas con el tile que habia antes
-     * (panel de GAME OVER, agua suelta) en mitad del cauce, y manchas en el
-     * cesped. Tambien borra la tierra central si la celda no esta en isla_bit.
-     *
-     * El oleaje hay que hacerlo cambiando el PATRON del tile de agua (o con
-     * dos tiles alternando por bloques), nunca repintando celdas que el
-     * jugador esta viendo. */
-    (void)0;
-}
 
 #if 0
 static void update_water_anim_old(void) {
@@ -2477,7 +2562,6 @@ static void reset_game(void) {
     /* Avion: se coloca DESPUES de regenerar el rio (mas abajo), porque
      * plane_place_safe() lee el perfil river_l/river_r de la fila. */
     plane_dead = 0;
-    plane_dead_frames = 0;
     plane_blast = 0;
     esperando_fire = 1;       /* avion fijo al reiniciar; arranca con FIRE */
 
@@ -2643,7 +2727,15 @@ int main(void) {
              * es lo que se ve antes de que el jugador pueda volver a empezar. */
             if (plane_blast) plane_blast--;
 
-            if (fire_pressed()) {
+            /* MIENTRAS ARDE LA EXPLOSION NO SE ATIENDE AL BOTON. Antes se podia
+             * pulsar FIRE en mitad del fuego y el avion reaparecia encima de la
+             * animacion; ahora el disparo se ignora hasta que el fuego termina
+             * (plane_blast llega a 0). Se sigue llamando a fire_pressed() para
+             * DRENAR el UART: si no, los ' ' que lleguen durante la animacion se
+             * acumulan y el juego arrancaria solo al acabar. */
+            if (plane_blast) {
+                (void)fire_pressed();       /* consumir y descartar */
+            } else if (fire_pressed()) {
                 esperando_fire = 0;
                 /* OJO: sin esto el avion queda INVULNERABLE. plane_hit() pone
                  * plane_dead=1 y solo reset_game() lo volvia a 0, asi que al
@@ -2651,7 +2743,6 @@ int main(void) {
                  * "if (plane_dead) return" y el avion atravesaba orillas,
                  * islas y enemigos sin perder una vida. */
                 plane_dead = 0;
-                plane_dead_frames = 0;
                 scroll_speed = SCROLL_NORM;
                 scroll_acc   = 0;
                 snd_engine_on();
@@ -2659,20 +2750,34 @@ int main(void) {
             snd_update();
             draw_plane();
             hud_draw();
-            update_water_anim();
             vid_wait_vblank_end();
             perf_end();
             continue;
         }
 
-        /* 1) Leer entrada y mover el avion / disparar (solo si no hay game over). */
-        if (!game_over) {
+        /* 1) Leer entrada y mover el avion / disparar (solo si no hay game over
+         * NI explosion en curso: mientras arde, el avion no existe). */
+        if (!game_over && !plane_blast) {
             read_input();
             /* El rugido del motor sigue la velocidad: al acelerar (arriba) se
              * oye mas agudo y ligero, al frenar (abajo) mas grave y pesado. */
             snd_engine_speed(scroll_speed);
         }
-        if (plane_blast) plane_blast--;
+        if (plane_blast) {
+            plane_blast--;
+            /* Al apagarse el fuego el avion reaparece QUIETO y el rio se para:
+             * queda listo para arrancar con FIRE, igual que al empezar la
+             * partida. Durante la animacion el mundo SI sigue avanzando (la
+             * explosion se mueve con el scroll, como en el arcade); el avion no.
+             *
+             * El scroll_acc se pone a 0 para que el primer pase tras el FIRE no
+             * salga a medio pixel y de un tiron. */
+            if (!plane_blast && !game_over) {
+                plane_dead = 0;
+                esperando_fire = 1;
+                scroll_acc = 0;
+            }
+        }
 
         /* 1b) EL RIO SE MUEVE PRIMERO.
          *
@@ -2738,7 +2843,6 @@ int main(void) {
             game_over_screen();
         } else {
             /* El scroll ya se aplico en 1b. */
-            update_water_anim();
         }
         perf_mark(2);
 
