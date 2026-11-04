@@ -255,9 +255,12 @@ static uint8_t  scroll_step;
 #define SPR_PLANE_PAT  12
 #define SPR_BOAT       13
 #define SPR_BOAT_PAT   13
-#define SPR_HELI       15
+#define SPR_HELI       13
 #define SPR_HELI_PAT   9
-#define SPR_BULLET     14    /* 14 y 15 (pool de 2 balas) */
+#define SPR_BULLET     14    /* 14 y 15 (pool de 2 balas). OJO: el barco y el
+                              * helicoptero COMPARTEN el slot 13; si la bala
+                              * (SPR_BULLET + 1) cae en ese slot, cada disparo
+                              * deja el enemigo convertido en una barra. */
 #define SPR_BULLET_PAT 14
 /* Desfase entre el ORIGEN del sprite de la bala y su dibujo: el patron ocupa
  * las columnas 3 y 4, asi que el dibujo empieza en bullet_x + BULLET_OFF_X y
