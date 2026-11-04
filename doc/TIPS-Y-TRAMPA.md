@@ -141,6 +141,20 @@ ejército, un fondo de objetos) usa **tiles**.
 > **Regla práctica:** objetos "pocos y móviles libres" → **sprites**; muchos
 > objetos en rejilla, o el cuerpo largo de un personaje → **tiles**.
 
+### 3.1b El índice de OAM es la PRIORIDAD (el menor gana)
+Si dos sprites se solapan, **se ve el de menor índice**. Un HUD hecho con
+sprites tiene que ocupar los índices **más bajos**; si va detrás de los objetos
+del juego, cualquier bidón o enemigo que pase por esa banda lo tapa.
+
+En River Raid la barra de combustible (slots 4-10) quedaba tapada por el
+bidón (slot 4) y la explosión (slot 5). Reparto actual: HUD 0-12, avión 13,
+explosión 14, enemigo 15, balas 16-17, bidón 18.
+
+> **Ojo con el límite de 8 por línea:** los objetos pueden llegar a la banda
+del HUD al entrar por arriba. Mientras la envolvente no baje de
+`HUD_Y2 + 8`, no hay problema; si se permite, el sprite extra se pierde y
+encima puede caer en la fila del HUD. `tools/prioridad_hud.py` lo vigila.
+
 ### 3.2 El espejo/giro con FLIP solo es fiable en SPRITES
 Los **atributos de tile de fondo** documentan bits de flip X/Y, pero en la
 práctica **no voltean de forma fiable**. Los **sprites** sí: usa

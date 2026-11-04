@@ -115,7 +115,16 @@ static uint8_t  scroll_step;
 /* Sprite del deposito de combustible. La paleta 3 se reprograma en
  * setup_video(): el bidon se ve ROJO con la "F" BLANCA. Ver la tabla de
  * paletas junto a SPR_PLANE_PAL, mas abajo. */
-#define SPR_FUEL       4
+/* Slots de OAM. PRIORIDAD: el core dibuja el sprite de MENOR INDICE por
+ * encima (manual del core, §6.1). El HUD va en los slots MAS BAJOS para que
+ * ningun objeto del juego lo tape: antes el bidon (4) y la explosion (5)
+ * pasaban por delante de la barra de combustible y de los digitos.
+ *
+ *   0-3    puntos  4-10 barra  11-12 vidas
+ *   13 avion  14 explosion  15 heli/barco  16-17 balas
+ *
+ * OJO: al mover slots hay que revisar tambien el comentario de SPR_HUD_BASE. */
+#define SPR_FUEL       18
 #define SPR_FUEL_PAT   15
 #define SPR_FUEL_PAL   VC_SPPAL_3
 
@@ -133,9 +142,9 @@ static uint8_t  scroll_step;
  * balas. MOVIMIENTO: si el HUD se lleva 14 slots no queda margen para enemigos
  * extra; para ampliar el juego hay que soltar algun sprite o pasar el HUD a
  * tiles con split de raster. */
-#define SPR_HUD_BASE   10      /* puntos: 10..13                     */
-#define SPR_HUD_FUEL   14      /* barra: 14..21                      */
-#define SPR_HUD_LIVES  22      /* icono de vida (22) y numero (23)   */
+#define SPR_HUD_BASE   0       /* puntos: 0..3                       */
+#define SPR_HUD_FUEL   4       /* barra: 4..10                       */
+#define SPR_HUD_LIVES  11      /* icono de vida (11) y numero (12)   */
 /* Y=10: la fila 1 del tilemap (pixeles 8..15). La fila 0 (0..7) la recorta
  * el overscan de muchos monitores (manual del core, 1.9 y 5): con Y=2 el HUD
  * quedaba medio fuera de pantalla. Aqui sobra 2 px de margen por arriba. */
@@ -218,7 +227,11 @@ static uint8_t  scroll_step;
 /* ===========================================================================
  * SPRITES
  * ===========================================================================
- * Slots bajos: objetos del juego. 10..15: HUD (fijo en la banda superior).
+ * PRIORIDAD (el menor indice se dibuja ENCIMA):
+ *   0-12  HUD      13  avion      14  explosion
+ *   15    enemigo  16-17 balas     18 bidon
+ * Asi el HUD queda siempre visible y el avion pasa por delante del enemigo,
+ * de las balas y del bidon.
  * NOTA: el HUD NO puede ir en el tilemap, porque la banda media de scroll
  * recorre las 32 filas del mapa y lo haria aparecer abajo (comprobado con el
  * demo oficial: le pasa lo mismo). Por eso el HUD va en SPRITES.
@@ -236,13 +249,13 @@ static uint8_t  scroll_step;
  * Rango disponible: 3..63. Las fases 2 y 4 escriben en pat_arr (fondo), no en
  * spr_arr, asi que los patrones de sprite 32..63 NO se tocan.
  * Ver doc/PATRONES-SPRITE-CAUSA.md. */
-#define SPR_PLANE      0     /* sprite unico del avion (escala 2x) */
+#define SPR_PLANE      13    /* sprite unico del avion (escala 2x) */
 #define SPR_PLANE_PAT  12
-#define SPR_BOAT       8
+#define SPR_BOAT       15
 #define SPR_BOAT_PAT   13
-#define SPR_HELI       6
+#define SPR_HELI       15
 #define SPR_HELI_PAT   9
-#define SPR_BULLET     30    /* 30 y 31 (pool de 2 balas), libre de HUD */
+#define SPR_BULLET     16    /* 16 y 17 (pool de 2 balas) */
 #define SPR_BULLET_PAT 14
 /* Desfase entre el ORIGEN del sprite de la bala y su dibujo: el patron ocupa
  * las columnas 3 y 4, asi que el dibujo empieza en bullet_x + BULLET_OFF_X y
@@ -253,7 +266,7 @@ static uint8_t  scroll_step;
 #define BULLET_W       2
 #define BULLET_H       6
 #define BULLET_HIT_X(i) ((uint16_t)(bullet_x[i] + BULLET_OFF_X))
-#define SPR_BOOM       5
+#define SPR_BOOM       14
 /* OJO: los 3 patrones de la explosion tienen que caer en indices LIBRES.
  * Antes eran 10, 11 y 12, y el 12 es SPR_PLANE_PAT: el tercer frame del fuego
  * machacaba el dibujo del avion y en vuelo normal se veia un anillo blanco en
@@ -562,8 +575,8 @@ static const uint8_t tile_water2_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x
  * del nucleo y el blanco la corona/onda.
  *
  * El AVION es spr_plane (mas abajo, en NAVES), no esta explosion: los dos
- * comparten el slot 5 del OAM, por eso draw_boom() se aparta cuando el avion
- * esta explotando. */
+ * comparten el slot SPR_BOOM del OAM, por eso draw_boom() se aparta cuando el
+ * avion esta explotando. */
 static const uint8_t spr_boom_p0[8]  = { 0x00,0x00,0x10,0x10,0x00,0x00,0x10,0x00 };
 static const uint8_t spr_boom_p1[8]  = { 0x00,0x10,0x28,0x44,0x10,0x38,0x28,0x00 };
 static const uint8_t spr_boom2_p0[8] = { 0x00,0x38,0x6C,0x54,0x44,0x6C,0x38,0x00 };
