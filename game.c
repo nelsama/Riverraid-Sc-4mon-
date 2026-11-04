@@ -176,8 +176,13 @@ static uint8_t  scroll_step;
  * SE DIBUJA. El HUD tenia los 14 en Y=10, asi que en hardware real
  * desaparecian las 4 ultimas barras y el bloque de vidas. Por eso va partido
  * en dos filas. */
-#define HUD_LIVES_X    120     /* icono de vida   (Y = HUD_Y )       */
-#define HUD_LIVESNUM_X 120     /* numero de vidas (Y = HUD_Y2)       */
+#define HUD_LIVES_X    72      /* icono de vida   (Y = HUD_Y )       */
+#define HUD_LIVESNUM_X 72      /* numero de vidas (Y = HUD_Y2)       */
+/* 72 cae justo a la derecha de la barra: esta acaba en
+ * HUD_FUEL_X + (HUD_FUEL_W-1)*HUD_FUEL_STEP + 7 = 24 + 36 + 7 = 67, asi que
+ * quedan 5 px de aire (antes estaban en 120, a media pantalla, y el bloque de
+ * vidas se leia como un elemento suelto). Icono y numero van alineados en la
+ * misma columna. */
 
 /* Patrones de sprite del HUD. */
 #define HUD_PAT_DIGIT0 42       /* 10 digitos = 42..51                */
