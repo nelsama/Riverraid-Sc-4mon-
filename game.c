@@ -2309,25 +2309,39 @@ static void check_bullet_collisions(void) {
             continue;
         }
 
-        /* Bala <-> enemigos (caja AABB). */
+        /* Bala <-> ENEMIGOS y <-> BIDON (caja AABB).
+         *
+         * El bidon TAMBIEN se destruye de un disparo, como en el River Raid de
+         * verdad: no se recoge, se revienta. El CONTACTO del avion no lo
+         * consume (ver check_plane_collisions), asi que el jugador elige entre
+         * pasar por encima para cargar o quitarlo de en medio a tiros. Los
+         * bidones no dan puntos, pero la explosion es la misma, asi que se pone
+         * al final y se salta a ella con goto (es lo que menos bytes ocupa en
+         * cc65; repetirla costaba 74 de los que no hay). */
         {
             uint8_t k;
             for (k = 0; k < NENEMIGOS; k++) {
                 if (!ene_active[k]) continue;
                 if (!fv_box_toca(BULLET_HIT_X(i), bullet_y[i], BULLET_W, BULLET_H,
                                  ene_x[k], ene_y[k], ENEMIGO_W, ENEMIGO_H)) continue;
-
-                bullet_alive[i] = 0;
-                ene_active[k] = 0;   /* destruye el enemigo */
-                boom_active = 1;     /* explosion en su sitio */
+                ene_active[k] = 0;
+                score += SCORE_SHIP;
                 boom_x = ene_x[k];
                 boom_y = ene_y[k];
-                boom_frames = 12;
-                score += SCORE_SHIP;
-                snd_explode();
-                break;
+                goto explota;
             }
-            if (!bullet_alive[i]) continue;
+            if (!fuel_active ||
+                !fv_box_toca(BULLET_HIT_X(i), bullet_y[i], BULLET_W, BULLET_H,
+                             fuel_x, fuel_y, 8, 8)) continue;
+            fuel_active = 0;
+            boom_x = fuel_x;
+            boom_y = fuel_y;
+        explota:
+            bullet_alive[i] = 0;
+            boom_active = 1;
+            boom_frames = 12;
+            snd_explode();
+            continue;
         }
 
         /* Bala <-> orilla (por X; la bala viaja en linea recta asi que si su X
@@ -2603,6 +2617,12 @@ static void update_fuel(void) {
         }
         return;
     }
+
+    /* Sin bidon en pantalla no hay contacto que contar. Se pone aqui y no en
+     * cada sitio que retira el bidon (fin de pantalla, barrido de la bala): asi
+     * el estado de la recarga se limpia solo en el siguiente frame. */
+    fuel_touching = 0;
+    fuel_refuel_tick = 0;
 
     if (world_row >= fuel_next) {
         /* Aparece en AGUA navegable de la fila por la que entra. */
