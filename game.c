@@ -1295,8 +1295,19 @@ static uint8_t generate_world_row(uint32_t n) {
      * ya generadas con el bloque actual. */
     if (gen_block_row == 0) {
         gen_new_block();
-        /* Puente de arranque: solo la primera fila del mundo. */
-        if (gen_puente_inicial) { gen_bridge = 1; gen_puente_inicial = 0; }
+        /* Puente de arranque: solo la primera fila del mundo.
+         * Ademas de marcar la viga se APAGA LA ISLA de golpe: gen_split_on = 0
+         * solo impide que la isla CREZCA, pero gen_split_w seguia valiendo 9,
+         * asi que las filas de arriba del puente se generaban partidas por una
+         * isla que ya no tocaba (se veia una isla larga justo encima del
+         * puente de arranque). */
+        if (gen_puente_inicial) {
+            gen_bridge = 1;
+            gen_split_on = 0;
+            gen_split_target = 0;
+            gen_split_w = 0;
+            gen_puente_inicial = 0;
+        }
     }
 
     /* --- VIGA: solo las primeras filas del bloque de puente ---
