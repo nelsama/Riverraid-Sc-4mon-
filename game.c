@@ -217,6 +217,7 @@ static uint8_t  scroll_step;
 #define TILE_TREE     0x1B   /* arbusto sobre la isla central            */
 #define TILE_PANEL    0x1C   /* fondo solido del panel de GAME OVER       */
 #define TILE_BRIDGE   0x1D   /* viga del puente (arena maciza)            */
+#define TILE_ROAD     0x1E   /* calle del puente, sobre el cesped        */
 
 /* ===========================================================================
  * PALETAS
@@ -325,11 +326,11 @@ static uint8_t  scroll_step;
 #define SPR_PLANE_PAL  VC_SPPAL_1   /* avion: cian / azul / (no usa 3) */
 #define SPR_BOAT_PAL   VC_SPPAL_2   /* barco: negro / azul / rojo       */
 #define SPR_HELI_PAL   VC_SPPAL_0   /* heli:  cian / negro / rojo       */
-#define SPR_BULLET_PAL VC_SPPAL_1   /* bala:  solo el color 3 (blanco)  */
-/* La explosion usa la MISMA paleta que el avion: los tres patrones estan
- * dibujados con los indices 1 (cian), 2 (azul) y 3 (blanco) de esa paleta, asi
- * el fuego queda en la gama del avion en vez de en el rojo de la paleta 3. */
-#define SPR_BOOM_PAL   VC_SPPAL_1
+/* La bala y la explosion usan la MISMA paleta que el avion: los tres patrones
+ * de fuego estan dibujados con los indices 1 (cian), 2 (azul) y 3 (blanco) de
+ * esa paleta, asi el fuego queda en la gama del avion y no en el rojo. */
+#define SPR_BULLET_PAL SPR_PLANE_PAL
+#define SPR_BOOM_PAL   SPR_PLANE_PAL
 
 /* Balas del jugador (pool pequeño). */
 #define NBULLETS      2
@@ -350,20 +351,12 @@ static uint8_t  scroll_step;
  * =========================================================================== */
 static uint16_t rng_state;
 
-/* DIAGNOSTICO: causa de la ultima muerte del avion.
+/* DIAGNOSTICO: causa de la ultima muerte del avion, en $03E0.
  *   0 = sin morir, 1 = orilla/isla/viga, 2 = enemigo, 3 = sin combustible
- * Las de 0x03E1-0x03E4 son el detalle del choque contra la orilla (fila de
- * cinta, columna y los dos bordes del agua): tools/auditar_choques.py.
- *
- * OJO: las de 0x03E5-0x03EA (recarga de combustible) se QUITARON para
- * recuperar RAM: nadie las leia ya y ocupaban codigo en el bucle de frame. Si
- * se vuelven a necesitar, van en $03E5 en adelante (la pila empieza en $3DFF).
- * Se leen desde el emulador con /ram.bin. */
+ * Se lee desde el emulador con /ram.bin. El detalle del choque ($03E1-$03E4) y
+ * la recarga de combustible ($03E5-$03EA) se quitaron para recuperar RAM: el
+ * detalle lo cubre tools/verificar_colision.py, que simula el generador. */
 #define DBG_MUERTE (*(volatile uint8_t *)0x03E0)
-#define DBG_FILA   (*(volatile uint8_t *)0x03E1)
-#define DBG_COL    (*(volatile uint8_t *)0x03E2)
-#define DBG_L      (*(volatile uint8_t *)0x03E3)
-#define DBG_R      (*(volatile uint8_t *)0x03E4)
 
 /* Diagnostico de la RECARGA por contacto ($03E5-$03EA). Son 6 bytes de
  * contadores que se actualizan una vez por frame; sirven para medir con
@@ -558,6 +551,13 @@ static const uint8_t tile_tree_p1[8] = { 0x1F,0x07,0xC3,0xF1,0xF9,0xF8,0xFC,0xFC
  * plan0=1 y plan1=0 en toda la celda -> indice (0<<1)|1 = 1 = arena. */
 static const uint8_t tile_bridge_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
 static const uint8_t tile_bridge_p1[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
+
+/* CALLE DEL PUENTE (TILE_ROAD): la franja de tierra que llega a los dos lados
+ * del cauce, en las mismas filas que la viga. Se pinta con PAL_EDGE, donde el
+ * indice 2 es ARENA; el 0 es transparente (dejaria ver el fondo), asi que va
+ * con p1=1 -> indice (1<<1)|0 = 2. */
+static const uint8_t tile_road_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+
 
 /* Fondo del panel de GAME OVER: opaco y en INDICE 1, que en PAL_MENU es el
  * NEGRO. La fuente siempre pinta el indice 3 (BLANCO en PAL_MENU), asi que
@@ -989,7 +989,10 @@ static uint8_t  gen_split_w;          /* ancho ACTUAL de la isla (1..9)   */
 static uint8_t  gen_w_tras_isla;
 static uint8_t  gen_split_target;     /* semiancho objetivo de la tierra  */
 static uint8_t  gen_funnel;           /* 1 = bloque de embudo (pre-puente)*/
-static uint8_t  gen_bridge;           /* 1 = esta fila es del PUENTE      */
+static uint8_t  gen_bridge;
+/* 1 = la proxima fila que se genere sera el puente de arranque (ver
+ * gen_reset()). Lo consume generate_world_row(). */
+static uint8_t  gen_puente_inicial;           /* 1 = esta fila es del PUENTE      */
 static uint8_t  gen_block_row;        /* filas desde el ultimo bloque     */
 static uint8_t  gen_block_idx;        /* bloque dentro del sector (0..15) */
 static uint16_t gen_sector;           /* numero de sector (= puente)      */
@@ -1214,6 +1217,15 @@ static void gen_reset(void) {
     gen_sector    = 1;
     gen_new_block();
 
+    /* El PRIMER bloque es de PUENTE: asi la partida arranca con el avion recien
+     * pasado un puente (como el original) y lo primero que se ve es la calle y
+     * la viga justo debajo.
+     * OJO: NO vale con poner gen_bridge = 1 aqui, porque la primera fila llama
+     * a gen_new_block() (gen_block_row == 0) y lo vuelve a poner a 0. Se usa un
+     * flag aparte que consume la primera fila generada. No toca el LFSR: el
+     * trazado del rio sigue siendo el de siempre. */
+    gen_puente_inicial = 1;
+
     /* Checkpoint inicial = estado de salida del tramo 1. */
     gen_crossed = 0;
     gen_save_checkpoint();
@@ -1281,7 +1293,11 @@ static uint8_t generate_world_row(uint32_t n) {
      * Cada GEN_BLOCK filas se precalcula el siguiente bloque (ancho, curva,
      * isla, entidad y si es embudo o puente). gen_block_row cuenta las filas
      * ya generadas con el bloque actual. */
-    if (gen_block_row == 0) { gen_new_block(); }
+    if (gen_block_row == 0) {
+        gen_new_block();
+        /* Puente de arranque: solo la primera fila del mundo. */
+        if (gen_puente_inicial) { gen_bridge = 1; gen_puente_inicial = 0; }
+    }
 
     /* --- VIGA: solo las primeras filas del bloque de puente ---
      * `gen_bridge` marca el BLOQUE entero (para el checkpoint), pero la viga
@@ -1514,17 +1530,28 @@ static uint8_t generate_world_row(uint32_t n) {
                 tile = wave;                             attr = PAL_WATER;
             }
 
-            /* --- PUENTE: viga maciza con un HUECO en el centro ---
+            /* --- PUENTE: viga maciza con un HUECO en el centro ----
              * La viga cruza todo el cauce (gen_left..gen_right) salvo las dos
              * celdas del hueco, que es por donde se pasa. Antes se tapaba el
              * cauce ENTERO y el avion volaba sobre la viga: no habia puente que
              * cruzar, solo una franja de arena. El hueco esta en el centro del
              * cauce, que es a donde converge el embudo (GEN_PIER_L..R), asi que
              * siempre cae en la misma columna y el jugador puede anticiparlo. */
-            if (puente_bit[cinta_row] && col >= gen_left && col <= gen_right &&
-                (col < BRIDGE_GAP_L || col > BRIDGE_GAP_R)) {
-                tile = TILE_BRIDGE;
-                attr = PAL_ISLAND;         /* arena maciza */
+            if (puente_bit[cinta_row]) {
+                if (col >= gen_left && col <= gen_right &&
+                    (col < BRIDGE_GAP_L || col > BRIDGE_GAP_R)) {
+                    /* VIGA: mismo patron que la calle, pero en el indice 3 de
+                     * PAL_ISLAND (madera) para que se distinga del camino. */
+                    tile = TILE_BRIDGE;
+                    attr = PAL_ISLAND;         /* indice 1 = arena */
+                } else if (col < gen_left || col > gen_right) {
+                    /* CALLE: la franja de tierra que llega a los lados del
+                     * cauce, en las mismas filas que el puente. Sin esto la
+                     * viga "arrancaba del cesped" y no habia camino: es el
+                     * puente completo (calle + viga + hueco). */
+                    tile = TILE_ROAD;
+                    attr = PAL_EDGE;           /* indice 2 = arena */
+                }
             }
 
             VID_ADDR_LO = (uint8_t)cell;
@@ -1538,6 +1565,36 @@ static uint8_t generate_world_row(uint32_t n) {
         }
     }
     return 1;
+}
+
+/* Rellena la cinta de scroll de 32 filas y deja la camara como al arrancar.
+ *
+/* Rellena la cinta de scroll de 32 filas y deja la camara como al arrancar.
+ *
+ * PUENTE INICIAL: en el original la partida empieza con el avion ya pasado un
+ * puente, asi que lo primero que se ve es la calle y la viga justo DEBAJO del
+ * avion. Sin esto la partida arranca sobre agua sin nada que mirar.
+ *
+ * El avion vuela a PLANE_Y (borde inferior), y el eje Y de la OAM crece hacia
+ * ABAJO: el puente tiene que caer en las ultimas filas de la cinta (cerca de
+ * la 30-31), que son las de abajo. Ver FILA_CINTA(): cinta = (scroll + y) / 8.
+ *
+ * La usan setup_video() y reset_game(): antes cada una tenia su propia copia
+ * del bucle y era facil que se desincronizaran. */
+static void llenar_cinta_inicial(void) {
+    uint8_t row;
+
+    gen_reset();
+    for (row = 0; row < VC_MAP_ROWS; row++) {
+        generate_world_row((uint32_t)row);
+    }
+    world_row    = VC_MAP_ROWS - 2;
+    scroll_total = (uint32_t)((VC_MAP_ROWS - 1) * 8);
+    scroll_val   = (uint16_t)((0 - scroll_total) & 0xFF);
+    scroll_speed = SCROLL_NORM;
+    scroll_acc   = 0;
+    scroll_step  = 1;
+    vid_set_scroll_y(scroll_val);
 }
 
 /* ===========================================================================
@@ -1563,6 +1620,7 @@ static void load_patterns(void) {
     fv_load_bg_pattern(TILE_COAST_M, tile_edge_r0_p0, tile_edge_r0_p1);
     fv_load_bg_pattern(TILE_TREE,    tile_tree_p0,    tile_tree_p1);
     fv_load_bg_pattern(TILE_BRIDGE,  tile_bridge_p0,  tile_bridge_p1);
+    fv_load_bg_pattern(TILE_ROAD,    tile_bridge_p1,  tile_road_p1);
     /* Fondo opaco del panel de GAME OVER (TILE_PANEL usa el indice 1). */
     fv_load_bg_pattern(TILE_PANEL,   tile_panel_p0,   tile_panel_p1);
 
@@ -1633,7 +1691,7 @@ static void setup_video(void) {
      * 3 = verde oscuro #006600. El agua de la orilla es transparente
      * (indice 0) y deja ver el BG_COLOR, que es el mismo azul del rio. */
     vid_pal_set_bg(PAL_EDGE, 1, VC_RGB444(0x0, 0xA, 0x0));
-    vid_pal_set_bg(PAL_EDGE, 2, VC_RGB444(0xD, 0x8, 0x3));
+    vid_pal_set_bg(PAL_EDGE, 2, VC_RGB444(0xC, 0x8, 0x2));   /* arena: calle del puente */
     vid_pal_set_bg(PAL_EDGE, 3, VC_RGB444(0x0, 0x6, 0x0));
 
     /* ---- PALETAS DE SPRITE: solo se escriben las entradas que CAMBIAN ----
@@ -1683,23 +1741,7 @@ static void setup_video(void) {
      * pintar para que TODAS las celdas queden escritas por este generador. */
     vid_clear_vram();
     vid_set_scroll_y(0);
-    gen_reset();
-
-    /* Rellena la cinta: la fila de mundo n va a la fila de cinta (-n) & 31, asi
-     * que la 31 es la de arriba (negativa) y las 0..30 quedan por delante. */
-    for (row = 0; row < VC_MAP_ROWS; row++) {
-        generate_world_row((uint32_t)row);
-    }
-    world_row = VC_MAP_ROWS - 2;
-
-    /* Camara: muestra SANA el tramo ya pintado y deja UNA fila entera por
-     * delante (la 30 del mundo). Ver advance_scroll(). */
-    scroll_total = (uint32_t)((VC_MAP_ROWS - 1) * 8);
-    scroll_val   = (uint16_t)((0 - scroll_total) & 0xFF);
-    scroll_speed = SCROLL_NORM;
-    scroll_acc   = 0;
-    scroll_step  = 1;
-    vid_set_scroll_y(scroll_val);
+    llenar_cinta_inicial();
 
     plane_place_safe();
 
@@ -2104,8 +2146,6 @@ static uint8_t plane_on_bank(uint16_t x, uint8_t y) {
         uint8_t c;
         for (c = c0; c <= c1; c++) {
             if (celda_en_tierra(cinta_row, c)) {
-                DBG_FILA = cinta_row; DBG_COL = c;
-                DBG_L = river_l[cinta_row]; DBG_R = river_r[cinta_row];
                 return 1;
             }
         }
@@ -2748,24 +2788,10 @@ static void reset_game(void) {
      * el rio sale en blanco y los sprites como bloques solidos. */
     load_patterns();
 
-    /* Re-genera el rio (misma semilla => mismo layout). El rio se repinta
-     * entero, asi que no hay que borrar el panel del GAME OVER a mano. */
+    /* Re-genera el rio (misma semilla => mismo layout) y vuelve a poner el
+     * puente inicial delante del avion. */
     rng_state = RIVER_SEED;
-
-    /* La camara se fija ANTES de pintar: la fila de mundo n se escribe en la
-     * cinta (32 - n) & 31, asi que si la camara ya esta en su sitio el repintado
-     * cae justo donde debe (si no, se pinta un layout y se ensena otro). */
-    scroll_total = (uint32_t)((VC_MAP_ROWS - 1) * 8);   /* ver setup_video() */
-    scroll_val = (uint16_t)((0 - scroll_total) & 0xFF);
-    vid_set_scroll_y(scroll_val);
-
-    for (row = 0; row < VC_MAP_ROWS; row++) {
-        generate_world_row((uint32_t)row);
-    }
-    world_row  = VC_MAP_ROWS - 2;
-    scroll_speed = SCROLL_NORM;
-    scroll_acc   = 0;
-    scroll_step  = 1;
+    llenar_cinta_inicial();
 
     /* Ahora que el perfil esta regenerado, colocar el avion en agua libre. */
     plane_place_safe();
