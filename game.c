@@ -216,7 +216,8 @@ static uint8_t  scroll_step;
  * byte, asi que ante la duda se mira una captura. */
 #define TILE_TREE     0x1B   /* arbusto sobre la isla central            */
 #define TILE_PANEL    0x1C   /* fondo solido del panel de GAME OVER       */
-#define TILE_BRIDGE   0x1D   /* viga del puente (arena maciza)            */
+#define TILE_BRIDGE   0x1D   /* viga del puente, variante A (madera)      */
+#define TILE_BRIDGE_B 0x1F   /* viga, variante B (alterna por fila)       */
 #define TILE_ROAD     0x1E   /* calle del puente, sobre el cesped        */
 
 /* ===========================================================================
@@ -229,8 +230,13 @@ static uint8_t  scroll_step;
                                    * 2 = verde oscuro, 3 = arena. El agua de la
                                    * orilla va en el indice 0 (transparente) y
                                    * deja ver el BG_COLOR (azul del rio). */
-/* Panel de GAME OVER: paleta 0, que queda libre porque el cesped ya usa
- * PAL_EDGE. 1 = negro (fondo opaco), 3 = blanco (texto de la fuente). */
+/* MADERA: paleta 0, libre desde que se quito el panel de GAME OVER (el cesped
+ * usa PAL_EDGE y la isla PAL_ISLAND). Se usa SOLO en las filas del puente, asi
+ * que no compite con nada. Con esta paleta la viga tiene su propio par de
+ * tonos sin tocar los de la isla:
+ *   1 = marron oscuro (junta)  2 = arena/madera clara (tabla) */
+#define PAL_WOOD     VC_BGPAL_0
+/* Panel de GAME OVER: ya no existe; se deja el nombre por el codigo de paleta. */
 #define PAL_MENU     VC_BGPAL_0
 /* ===========================================================================
  * SPRITES
@@ -546,11 +552,26 @@ static const uint8_t tile_edge_r0_p1[8] = { 0xF0, 0xF0, 0xF0, 0xF0, 0xE0, 0xE0, 
 static const uint8_t tile_tree_p0[8] = { 0xFF,0xFF,0x3B,0x0B,0x05,0x0D,0x03,0x03 };
 static const uint8_t tile_tree_p1[8] = { 0x1F,0x07,0xC3,0xF1,0xF9,0xF8,0xFC,0xFC };
 
-/* VIGA DEL PUENTE: madera maciza en ARENA. En PAL_ISLAND (1=arena, 2=veg,
- * 3=azul) el indice 2 es vegetacion, asi que la viga va en el INDICE 1:
- * plan0=1 y plan1=0 en toda la celda -> indice (0<<1)|1 = 1 = arena. */
-static const uint8_t tile_bridge_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
-static const uint8_t tile_bridge_p1[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
+/* INDICE DEL PIXEL DE FONDO: color = (p0 << 1) | p1, o sea PLAN0 lleva el bit
+ * ALTO. Con PLAN1 = 0 el indice es 0 o 2; con PLAN1 = 1 es 1 o 3.
+ * OJO: el indice 0 es TRANSPARENTE y deja ver lo que haya debajo (el cesped
+ * verde). Para pintar una veta hay que emitir un indice NO nulo: por eso las
+ * columnas de veta llevan p1 = 1 y p0 = 1 -> indice 3.
+ *
+ * VIGA DEL PUENTE: dos patrones que ALTERNAN por fila de cinta (A, B, A...)
+ * porque un tile suelto se repite identico cada 8 px y la viga parecia lisa.
+ *   fondo (tabla) = indice 2     veta (junta) = indice 3
+ * En PAL_WOOD: 2 = tabla clara #CC8822, 3 = junta oscura #884411. */
+static const uint8_t tile_bridge_p0[8] = { 0xFF,0xFF,0xFB,0xFF,0xFF,0xFE,0xFF,0xFF };
+/* PLAN1 lleva un 1 en las mismas columnas que los ceros de PLAN0, para que la
+ * veta pase de indice 0 (transparente) a indice 3. */
+static const uint8_t tile_bridge_p1[8] = { 0x00,0x00,0x04,0x00,0x00,0x01,0x00,0x00 };
+/* Variante B: las vetas caen en otras columnas, para que la madera no se vea
+ * repetida. Mismo criterio: PLAN0 todo a 1 (tabla, indice 2) y PLAN1 con 1 en
+ * las columnas de veta (indice 3). */
+static const uint8_t tile_bridge_b_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+static const uint8_t tile_bridge_b_p1[8] = { 0x00,0x20,0x00,0x00,0x04,0x00,0x00,0x00 };
+
 
 /* CALLE DEL PUENTE (TILE_ROAD): la franja de tierra que llega a los dos lados
  * del cauce, en las mismas filas que la viga. Se pinta con PAL_EDGE, donde el
@@ -1553,8 +1574,10 @@ static uint8_t generate_world_row(uint32_t n) {
                     (col < BRIDGE_GAP_L || col > BRIDGE_GAP_R)) {
                     /* VIGA: mismo patron que la calle, pero en el indice 3 de
                      * PAL_ISLAND (madera) para que se distinga del camino. */
-                    tile = TILE_BRIDGE;
-                    attr = PAL_ISLAND;         /* indice 1 = arena */
+                    /* VIGA: dos variantes que alternan por fila de cinta, para
+                     * que la madera no se vea como una banda lisa. */
+                    tile = (uint8_t)((cinta_row & 1) ? TILE_BRIDGE_B : TILE_BRIDGE);
+                    attr = PAL_WOOD;           /* 2 = tabla, 3 = junta */
                 } else if (col < gen_left || col > gen_right) {
                     /* CALLE: la franja de tierra que llega a los lados del
                      * cauce, en las mismas filas que el puente. Sin esto la
@@ -1599,6 +1622,7 @@ static void llenar_cinta_inicial(void) {
     for (row = 0; row < VC_MAP_ROWS; row++) {
         generate_world_row((uint32_t)row);
     }
+
     world_row    = VC_MAP_ROWS - 2;
     scroll_total = (uint32_t)((VC_MAP_ROWS - 1) * 8);
     scroll_val   = (uint16_t)((0 - scroll_total) & 0xFF);
@@ -1629,8 +1653,10 @@ static void load_patterns(void) {
     /* Transicion tierra->agua: arena y agua. */
     fv_load_bg_pattern(TILE_COAST, tile_edge_l0_p0, tile_edge_l0_p1);
     fv_load_bg_pattern(TILE_COAST_M, tile_edge_r0_p0, tile_edge_r0_p1);
-    fv_load_bg_pattern(TILE_TREE,    tile_tree_p0,    tile_tree_p1);
+
     fv_load_bg_pattern(TILE_BRIDGE,  tile_bridge_p0,  tile_bridge_p1);
+    fv_load_bg_pattern(TILE_TREE,    tile_tree_p0,    tile_tree_p1);
+    fv_load_bg_pattern(TILE_BRIDGE_B, tile_bridge_b_p0, tile_bridge_b_p1);
     fv_load_bg_pattern(TILE_ROAD,    tile_bridge_p1,  tile_road_p1);
     /* Fondo opaco del panel de GAME OVER (TILE_PANEL usa el indice 1). */
     fv_load_bg_pattern(TILE_PANEL,   tile_panel_p0,   tile_panel_p1);
@@ -1674,12 +1700,13 @@ static void setup_video(void) {
 
     vid_set_bgcolor(VC_RGB444(0x2, 0x6, 0xF));
 
-    /* Paleta 0 (PAL_MENU): solo la usa el panel de GAME OVER.
-     *   1 = NEGRO #000000 (fondo opaco)   2 = BLANCO #FFFFFF (sin uso conocido)
-     *   3 = BLANCO #FFFFFF (texto: la fuente pinta SIEMPRE el 3) */
-    vid_pal_set_bg(PAL_MENU, 1, VC_RGB444(0x0, 0x0, 0x0));
-    vid_pal_set_bg(PAL_MENU, 2, VC_RGB444(0xF, 0xF, 0xF));
-    vid_pal_set_bg(PAL_MENU, 3, VC_RGB444(0xF, 0xF, 0xF));
+    /* Paleta 0 = MADERA (la del puente). OJO: el antiguo panel de GAME OVER
+     * escribia esta MISMA paleta unas lineas mas abajo y la dejaba en negro
+     * (el puente salia negro). Ahora solo la usa la viga:
+     *   1 = marron oscuro (no se emite)   2 = tabla clara   3 = junta oscura */
+    vid_pal_set_bg(PAL_WOOD, 1, VC_RGB444(0x8, 0x4, 0x1));   /* marron oscuro */
+    vid_pal_set_bg(PAL_WOOD, 2, VC_RGB444(0xC, 0x8, 0x2));   /* tabla clara   */
+    vid_pal_set_bg(PAL_WOOD, 3, VC_RGB444(0x8, 0x4, 0x1));   /* junta oscura  */
 
     /* ---- PALETAS DE FONDO (tile) ----
      * Los presets de video.h NO valen: aqui van los colores FINALES, con el hex
@@ -1696,7 +1723,6 @@ static void setup_video(void) {
      * no tenga borde negro. */
     vid_pal_set_bg(PAL_ISLAND, 1, VC_RGB444(0xD, 0x8, 0x3));
     vid_pal_set_bg(PAL_ISLAND, 2, VC_RGB444(0x0, 0x7, 0x0));
-    vid_pal_set_bg(PAL_ISLAND, 3, VC_RGB444(0x2, 0x6, 0xF));
 
     /* Paleta 3 (cesped y orillas): 1 = verde claro #00AA00, 2 = arena #DD8833,
      * 3 = verde oscuro #006600. El agua de la orilla es transparente
