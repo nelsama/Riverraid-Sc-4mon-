@@ -283,9 +283,19 @@ static uint8_t  scroll_step;
  * directo: antes se comprobaba desde bullet_x y la caja salia 3 px a la
  * izquierda del dibujo. */
 #define BULLET_OFF_X   3
-#define BULLET_W       2
+/* CAJA DE COLISION, mas ancha que el DIBUJO a proposito.
+ *
+ * El dibujo son 2 px y el bidon 8: medido, el margen de acierto salia de 9 px
+ * pero MUY desequilibrado (1 px por un lado y 7 por el otro), asi que el
+ * jugador veia pasar la bala por encima del bidon sin que explotara.
+ * Por eso se usa una caja de 4 px CENTRADA en el dibujo: BULLET_HIT_X arranca
+ * 1 px antes (OFF_X - 1) y mide 4. Resultado medido: 9 px de margen,
+ * 4 a cada lado. Es colision "generosa", como en el arcade: al jugador le
+ * importa que la bala pase por encima del objeto, no el pixel exacto. */
+#define BULLET_INSET   1
+#define BULLET_W       4
 #define BULLET_H       6
-#define BULLET_HIT_X(i) ((uint16_t)(bullet_x[i] + BULLET_OFF_X))
+#define BULLET_HIT_X(i) ((uint16_t)(bullet_x[i] + BULLET_OFF_X - BULLET_INSET))
 #define SPR_BOOM       12
 /* OJO: los 3 patrones de la explosion tienen que caer en indices LIBRES.
  * Antes eran 10, 11 y 12, y el 12 es SPR_PLANE_PAT: el tercer frame del fuego
