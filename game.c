@@ -236,7 +236,8 @@ static uint8_t  scroll_step;
  * ===========================================================================
  * PRIORIDAD (el menor indice se dibuja ENCIMA):
  *   0-10  HUD      11  avion      12  explosion
- *   13    enemigo  14-15 balas      16 bidon
+ *   13    barco    14  helicoptero    15 (libre)
+ *   16    bidon    17-18 balas
  * Asi el HUD queda siempre visible y el avion pasa por delante del enemigo,
  * de las balas y del bidon.
  * NOTA: el HUD NO puede ir en el tilemap, porque la banda media de scroll
@@ -260,12 +261,10 @@ static uint8_t  scroll_step;
 #define SPR_PLANE_PAT  12
 #define SPR_BOAT       13
 #define SPR_BOAT_PAT   13
-#define SPR_HELI       13
+#define SPR_HELI       14    /* slot PROPIO: antes compartia el 13 con el
+                              * barco y solo podia haber un enemigo. */
 #define SPR_HELI_PAT   9
-#define SPR_BULLET     14    /* 14 y 15 (pool de 2 balas). OJO: el barco y el
-                              * helicoptero COMPARTEN el slot 13; si la bala
-                              * (SPR_BULLET + 1) cae en ese slot, cada disparo
-                              * deja el enemigo convertido en una barra. */
+#define SPR_BULLET     17    /* 17 y 18 (pool de 2 balas) */
 #define SPR_BULLET_PAT 14
 /* Desfase entre el ORIGEN del sprite de la bala y su dibujo: el patron ocupa
  * las columnas 3 y 4, asi que el dibujo empieza en bullet_x + BULLET_OFF_X y
@@ -390,13 +389,27 @@ static uint8_t  quit_flag;
 static uint8_t  sprites_off;   /* 1 = ya se ocultaron avion/objetos (game over) */
 static uint8_t  oam_cache_invalida;  /* 1 = redibujar TODO el OAM (patron incluido) */
 
-static uint8_t  boat_active;
-static uint8_t  boat_x;
-static uint8_t  boat_y;
-static uint8_t  boat_dir;       /* 0 = derecha, 1 = izquierda (deriva)      */
-static uint8_t  boat_drift;     /* contador de frames para el paso lateral  */
-static uint8_t  boat_is_heli;   /* 1 = el enemigo actual es un helicoptero  */
-static uint32_t boat_next;
+/* ENEMIGOS: DOS independientes, uno de cada tipo.
+ *
+ * Antes habia UN solo enemigo que era barco o helicoptero al azar y ambos
+ * compartian el slot 13 del OAM, asi que no podian coincidir nunca. Ahora cada
+ * tipo tiene su slot (SPR_BOAT y SPR_HELI) y su propio estado.
+ *
+ * REGLA: los dos pueden estar en pantalla, pero NUNCA a la misma altura.
+ * Antes de soltar uno se mira la y del otro (ENEMIGO_SEP_Y). */
+#define NENEMIGOS  2
+#define ENEMIGO_BOAT 0
+#define ENEMIGO_HELI 1
+#define ENEMIGO_SEP_Y 20    /* separacion vertical minima entre los dos (px) */
+#define ENEMIGO_W  16       /* 8x8 a escala 2x */
+#define ENEMIGO_H  16
+
+static uint8_t  ene_active[NENEMIGOS];
+static uint8_t  ene_x[NENEMIGOS];
+static uint8_t  ene_y[NENEMIGOS];
+static uint8_t  ene_dir[NENEMIGOS];   /* 0 = derecha, 1 = izquierda (deriva) */
+static uint8_t  ene_drift[NENEMIGOS]; /* contador de frames del paso lateral */
+static uint32_t ene_next[NENEMIGOS];  /* world_row en que vuelve a salir     */
 
 /* Explosion (sprite efimero al destruir un barco). */
 static uint8_t  boom_active;
@@ -1689,8 +1702,12 @@ static void setup_video(void) {
 
     plane_place_safe();
 
-    boat_active = 0;
-    boat_next   = 40;
+    /* Los DOS enemigos. El helicoptero sale un poco mas tarde que el barco para
+     * que no nazcan juntos y se note el cambio de enemigo. */
+    ene_active[ENEMIGO_BOAT] = 0;
+    ene_active[ENEMIGO_HELI] = 0;
+    ene_next[ENEMIGO_BOAT]   = 40;
+    ene_next[ENEMIGO_HELI]   = 56;
 
     /* Estado de las balas y muerte. */
     for (row = 0; row < NBULLETS; row++) bullet_alive[row] = 0;
@@ -1790,63 +1807,64 @@ static void draw_plane(void) {
     }
 }
 
-static void draw_boat(void) {
-    /* Igual que el avion: solo se escribe el OAM si cambia. fv_sprite_move y
-     * fv_oam cuestan ~7-15 us cada uno. */
-    static uint8_t last_on = 0xFF;   /* 0 = oculto, 1 = barco, 2 = heli */
-    static uint8_t last_x;
-    static uint8_t last_y;
-    static uint8_t last_dir = 0xFF;
-    uint8_t mode = (uint8_t)(boat_active ? (boat_is_heli ? 2 : 1) : 0);
+static void draw_enemy(uint8_t i) {
+    /* Igual que el avion: solo se escribe el OAM si cambia (fv_sprite_move y
+     * fv_oam cuestan ~7-15 us cada uno). Cada enemigo tiene SU cache: antes
+     * compartian el slot 13 y uno apagaba al otro. */
+    static uint8_t last_on[NENEMIGOS];
+    static uint8_t last_x[NENEMIGOS];
+    static uint8_t last_y[NENEMIGOS];
+    static uint8_t last_dir[NENEMIGOS];
+    static uint8_t inicializado;
+
+    uint8_t spr = (i == ENEMIGO_HELI) ? SPR_HELI : SPR_BOAT;
+    uint8_t on  = ene_active[i];
     /* Los dos sprites estan dibujados mirando a la IZQUIERDA. Si el enemigo se
-     * mueve hacia la derecha (boat_dir == 0) se voltea con VC_SPR_FLIP_X. */
-    uint8_t flip = (uint8_t)((boat_dir == 0) ? VC_SPR_FLIP_X : 0);
+     * mueve hacia la derecha (dir == 0) se voltea con VC_SPR_FLIP_X. */
+    uint8_t flip = (uint8_t)((ene_dir[i] == 0) ? VC_SPR_FLIP_X : 0);
 
-    if (oam_cache_invalida) {
-        last_on = 0xFF; last_dir = 0xFF;
+    if (oam_cache_invalida || !inicializado) {
+        last_on[0] = last_on[1] = 0xFF;
+        last_dir[0] = last_dir[1] = 0xFF;
+        inicializado = 1;
     }
 
-    if (mode == last_on && (!boat_active ||
-                            (boat_x == last_x && boat_y == last_y && flip == last_dir)))
+    if (on == last_on[i] &&
+        (!on || (ene_x[i] == last_x[i] && ene_y[i] == last_y[i] && flip == last_dir[i])))
         return;
 
-    if (mode == 0) {
-        fv_sprite_disable(SPR_BOAT);
-        fv_sprite_disable(SPR_HELI);
-        last_on = 0;
+    if (!on) {
+        fv_sprite_disable(spr);
+        last_on[i] = 0;
         return;
     }
 
-    if (mode != last_on) {
-        /* Cambio de tipo: oculta el que sobra y prepara el patron. */
-        if (mode == 2) {
-            fv_sprite_disable(SPR_BOAT);
-            fv_sprite_move(SPR_HELI, boat_x, boat_y,
-                           (uint8_t)(SPR_HELI_PAL | VC_SPR_SCALE2X | flip));
-            fv_oam(SPR_HELI, VC_OAM_TILE, SPR_HELI_PAT);
-        } else {
-            fv_sprite_disable(SPR_HELI);
-            fv_sprite_move(SPR_BOAT, boat_x, boat_y,
-                           (uint8_t)(SPR_BOAT_PAL | VC_SPR_SCALE2X | flip));
-            fv_oam(SPR_BOAT, VC_OAM_TILE, SPR_BOAT_PAT);
-        }
-    } else if (mode == 2) {
-        fv_sprite_move(SPR_HELI, boat_x, boat_y,
-                       (uint8_t)(SPR_HELI_PAL | VC_SPR_SCALE2X | flip));
+    if (!last_on[i]) {
+        /* Aparicion: coloca posicion, flags y patron. */
+        fv_sprite_move(spr, ene_x[i], ene_y[i],
+                       (uint8_t)(((i == ENEMIGO_HELI) ? SPR_HELI_PAL : SPR_BOAT_PAL)
+                                 | VC_SPR_SCALE2X | flip));
+        fv_oam(spr, VC_OAM_TILE,
+               (uint8_t)((i == ENEMIGO_HELI) ? SPR_HELI_PAT : SPR_BOAT_PAT));
+    } else {
+        fv_sprite_move(spr, ene_x[i], ene_y[i],
+                       (uint8_t)(((i == ENEMIGO_HELI) ? SPR_HELI_PAL : SPR_BOAT_PAL)
+                                 | VC_SPR_SCALE2X | flip));
         /* El FLIP va en las FLAGS: si solo cambia el sentido de marcha (misma
          * posicion), sin esto el enemigo se quedaba mirando al lado contrario. */
-        fv_oam(SPR_HELI, VC_OAM_FLAGS,
-               (uint8_t)(SPR_HELI_PAL | VC_SPR_SCALE2X | flip));
-    } else {
-        fv_sprite_move(SPR_BOAT, boat_x, boat_y,
-                       (uint8_t)(SPR_BOAT_PAL | VC_SPR_SCALE2X | flip));
-        fv_oam(SPR_BOAT, VC_OAM_FLAGS,
-               (uint8_t)(SPR_BOAT_PAL | VC_SPR_SCALE2X | flip));
+        fv_oam(spr, VC_OAM_FLAGS,
+               (uint8_t)(((i == ENEMIGO_HELI) ? SPR_HELI_PAL : SPR_BOAT_PAL)
+                         | VC_SPR_SCALE2X | flip));
     }
-    last_on = mode;
-    last_x = boat_x;
-    last_y = boat_y;
-    last_dir = flip;
+    last_on[i]  = 1;
+    last_x[i]   = ene_x[i];
+    last_y[i]   = ene_y[i];
+    last_dir[i] = flip;
+}
+
+static void draw_boat(void) {
+    draw_enemy(ENEMIGO_BOAT);
+    draw_enemy(ENEMIGO_HELI);
 }
 
 static void draw_fuel(void) {
@@ -2213,20 +2231,25 @@ static void check_bullet_collisions(void) {
             continue;
         }
 
-        /* Bala <-> barco (caja AABB). */
-        if (boat_active) {
-            if (fv_box_toca(BULLET_HIT_X(i), bullet_y[i], BULLET_W, BULLET_H,
-                         boat_x, boat_y, 16, 16)) {
+        /* Bala <-> enemigos (caja AABB). */
+        {
+            uint8_t k;
+            for (k = 0; k < NENEMIGOS; k++) {
+                if (!ene_active[k]) continue;
+                if (!fv_box_toca(BULLET_HIT_X(i), bullet_y[i], BULLET_W, BULLET_H,
+                                 ene_x[k], ene_y[k], ENEMIGO_W, ENEMIGO_H)) continue;
+
                 bullet_alive[i] = 0;
-                boat_active = 0;    /* destruye el barco */
-                boom_active = 1;    /* explosion en su sitio   */
-                boom_x = boat_x;
-                boom_y = boat_y;
+                ene_active[k] = 0;   /* destruye el enemigo */
+                boom_active = 1;     /* explosion en su sitio */
+                boom_x = ene_x[k];
+                boom_y = ene_y[k];
                 boom_frames = 12;
                 score += SCORE_SHIP;
                 snd_explode();
-                continue;
+                break;
             }
+            if (!bullet_alive[i]) continue;
         }
 
         /* Bala <-> orilla (por X; la bala viaja en linea recta asi que si su X
@@ -2287,11 +2310,14 @@ static void check_plane_collisions(void) {
     /* Nota: la colision con cesped e isla central la resuelve plane_on_bank()
      * mas arriba, consultando el perfil de la fila. */
 
-    /* Avion <-> barco (caja AABB). */
-    if (boat_active) {
-        if (fv_box_toca(plane_x, plane_y, PLANE_W, PLANE_H,
-                     boat_x, boat_y, 16, 16)) {
-            boat_active = 0;   /* choque destruye ambos */
+    /* Avion <-> enemigos (caja AABB). */
+    {
+        uint8_t k;
+        for (k = 0; k < NENEMIGOS; k++) {
+            if (!ene_active[k]) continue;
+            if (!fv_box_toca(plane_x, plane_y, PLANE_W, PLANE_H,
+                             ene_x[k], ene_y[k], ENEMIGO_W, ENEMIGO_H)) continue;
+            ene_active[k] = 0;   /* choque destruye ambos */
             DBG_MUERTE = 2;
             plane_hit();
             return;
@@ -2354,12 +2380,71 @@ static void check_plane_collisions(void) {
 }
 
 /* ===========================================================================
- * ACTUALIZACION DEL BARCO ENEMIGO
+ * ACTUALIZACION DE LOS ENEMIGOS
+ * ===========================================================================
+ * Dos enemigos independientes (barco y helicoptero). Cada uno lleva su propio
+ * temporizador de aparicion y su posicion; la unica restriccion que comparten
+ * es que NUNCA pueden estar a la misma altura (ENEMIGO_SEP_Y).
  * =========================================================================== */
-static void update_boat(void) {
-    if (boat_active) {
-        boat_y = (uint8_t)(boat_y + scroll_step);
-        if (boat_y >= VC_SCREEN_H) { boat_active = 0; return; }
+
+/* Devuelve 1 si el enemigo `i` puede nacer en y=0 sin quedar a la altura del
+ * otro. El que ya esta en pantalla siempre va por debajo (entro antes), asi
+ * que basta con exigir separacion respecto a su fila actual. */
+static uint8_t enemigo_libre(uint8_t i, uint8_t y) {
+    uint8_t k;
+    for (k = 0; k < NENEMIGOS; k++) {
+        uint8_t dy;
+        if (k == i || !ene_active[k]) continue;
+        dy = (uint8_t)((ene_y[k] >= y) ? (ene_y[k] - y) : (y - ene_y[k]));
+        if (dy < ENEMIGO_SEP_Y) return 0;
+    }
+    return 1;
+}
+
+/* Columna X al azar (de las de GEN_ZONE_L..R) donde cabe un sprite de 2
+ * celdas en la fila de entrada y=0. Devuelve 0xFF si no cabe en ninguna.
+ * Compartida por enemigos y bidon: antes cada uno tenia su copia. */
+static uint8_t columna_libre(void) {
+    uint8_t k, n = 0, pick, total = 0;
+
+    for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
+        if (sprite_cabe((uint16_t)(k * 8), 0)) total++;
+    }
+    if (total == 0) return 0xFF;
+
+    pick = (uint8_t)(rng_next() % total);
+    for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
+        if (!sprite_cabe((uint16_t)(k * 8), 0)) continue;
+        if (n == pick) break;
+        n++;
+    }
+    return (uint8_t)(k * 8);
+}
+
+/* Si el sprite dejo de estar sobre agua, lo mueve 1 px por frame hacia el agua
+ * mas cercana de su fila. Devuelve 0 si en esa fila ya no hay agua. */
+static uint8_t reubicar_al_agua(uint8_t *x, uint8_t y) {
+    uint8_t c0 = (uint8_t)(*x >> 3);
+    uint8_t target = 0xFF;
+    uint8_t d;
+    uint8_t tx;
+
+    for (d = 1; d < VC_MAP_COLS && target == 0xFF; d++) {
+        if (c0 >= d && sprite_cabe((uint16_t)((c0 - d) * 8), y)) target = (uint8_t)(c0 - d);
+        else if (sprite_cabe((uint16_t)((c0 + d) * 8), y))          target = (uint8_t)(c0 + d);
+    }
+    if (target == 0xFF) return 0;
+
+    tx = (uint8_t)(target * 8);
+    if (*x < tx) (*x)++;
+    else if (*x > tx) (*x)--;
+    return 1;
+}
+
+static void update_enemy(uint8_t i) {
+    if (ene_active[i]) {
+        ene_y[i] = (uint8_t)(ene_y[i] + scroll_step);
+        if (ene_y[i] >= VC_SCREEN_H) { ene_active[i] = 0; return; }
 
         /* Los dos bordes del sprite (16 px = 2 celdas) tienen que caer en agua.
          * Se pregunta CELDA A CELDA con celda_agua(), la misma que usa el
@@ -2370,79 +2455,49 @@ static void update_boat(void) {
          * pero **1 px por frame**: moviendolo de golpe saltaba de una celda a
          * otra y el jugador lo veia teletransportarse. Si se sale de la
          * pantalla por arriba/abajo no se mueve de lado. */
-        if (!celda_agua(FILA_CINTA(boat_y), (uint8_t)(boat_x >> 3))) {
-            uint8_t row = FILA_CINTA(boat_y);
-            uint8_t c0  = (uint8_t)(boat_x >> 3);
-            uint8_t target = 0xFF;
-            uint8_t d;
-
-            for (d = 1; d < VC_MAP_COLS && target == 0xFF; d++) {
-                if (c0 >= d && celda_agua(row, (uint8_t)(c0 - d))) target = (uint8_t)(c0 - d);
-                else if (celda_agua(row, (uint8_t)(c0 + d)))       target = (uint8_t)(c0 + d);
-            }
-            if (target == 0xFF) { boat_active = 0; return; }
-
-            /* 1 px hacia el objetivo, sin pasarse. */
-            {
-                uint8_t tx = (uint8_t)(target * 8);
-                if (boat_x < tx) boat_x++;
-                else if (boat_x > tx) boat_x--;
-            }
-        }
+        if (!reubicar_al_agua(&ene_x[i], ene_y[i])) { ene_active[i] = 0; return; }
 
         /* Deriva lateral con rebote: 1 px cada pocos frames. El HELICOPTERO
          * tambien queda sujeto al cauce; en el arcade vuela sobre el agua. */
-        if (++boat_drift >= (boat_is_heli ? 2 : 4)) {
+        if (++ene_drift[i] >= (i == ENEMIGO_HELI ? 2 : 4)) {
             uint8_t nx;
-            boat_drift = 0;
-            nx = (uint8_t)((boat_dir == 0) ? boat_x + 1 : boat_x - 1);
+            ene_drift[i] = 0;
+            nx = (uint8_t)((ene_dir[i] == 0) ? ene_x[i] + 1 : ene_x[i] - 1);
 
             /* Rebota si el sprite se sale del agua por cualquier lado. */
-            if (!sprite_cabe(nx, boat_y)) {
-                boat_dir = (uint8_t)!boat_dir;
+            if (!sprite_cabe(nx, ene_y[i])) {
+                ene_dir[i] = (uint8_t)!ene_dir[i];
             } else {
-                boat_x = nx;
+                ene_x[i] = nx;
             }
         }
         return;
     }
 
-    if (world_row >= boat_next) {
+    if (world_row < ene_next[i]) return;
+
+    /* Nace en y=0 solo si el otro no esta a esa altura (nunca a la misma
+     * altura). Si no, reintenta unos frames despues. */
+    if (!enemigo_libre(i, 0)) { ene_next[i] = world_row + 2; return; }
+
+    {
         /* Nace SIEMPRE en agua navegable de la fila por la que entra. */
-        uint8_t r0 = FILA_CINTA(0);
-        uint8_t cols = 0;
-        uint8_t k;
-
-        boat_is_heli = (uint8_t)(rng_next() & 1);   /* mitad barcos, mitad helis */
-
-        /* Cuenta las celdas validas y elige una al azar: no hay brazo "mejor",
-         * basta con que quepa el sprite (2 celdas). */
-        for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
-            if (sprite_cabe((uint16_t)(k * 8), 0)) cols++;
-        }
-        if (cols == 0) { boat_next = world_row + 4; return; }
-
-        {
-            uint8_t pick = (uint8_t)(rng_next() % cols);
-            for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
-                if (sprite_cabe((uint16_t)(k * 8), 0)) {
-                    if (pick == 0) break;
-                    pick--;
-                }
-            }
-        }
-        boat_x = (uint8_t)(k * 8);
-        boat_dir = (uint8_t)(rng_next() & 1);
-        boat_y = 0;
-        boat_drift = 0;
-        boat_active = 1;
-        boat_next = world_row + 16;
+        uint8_t x = columna_libre();
+        if (x == 0xFF) { ene_next[i] = world_row + 4; return; }
+        ene_x[i] = x;
+        ene_dir[i] = (uint8_t)(rng_next() & 1);
+        ene_y[i] = 0;
+        ene_drift[i] = 0;
+        ene_active[i] = 1;
+        ene_next[i] = world_row + 16;
     }
 }
 
-/* ===========================================================================
- * ACTUALIZACION DEL DEPOSITO DE COMBUSTIBLE
- * =========================================================================== */
+static void update_boat(void) {
+    update_enemy(ENEMIGO_BOAT);
+    update_enemy(ENEMIGO_HELI);
+}
+
 static void update_fuel(void) {
     if (fuel_active) {
         fuel_y = (uint8_t)(fuel_y + scroll_step);
@@ -2454,51 +2509,15 @@ static void update_fuel(void) {
          * bidon deja de ser agua donde esta, SE MUEVE LATERALMENTE al agua mas
          * cercana en vez de desaparecer. Antes se apagaba de golpe y el jugador
          * veia bidones que parpadeaban a media pantalla. */
-        if (!sprite_cabe(fuel_x, fuel_y)) {
-            uint8_t c0 = (uint8_t)(fuel_x >> 3);
-            uint8_t d;
-
-            for (d = 1; d < VC_MAP_COLS; d++) {
-                if (c0 >= d && sprite_cabe((uint16_t)((c0 - d) * 8), fuel_y)) {
-                    break;
-                }
-                if (sprite_cabe((uint16_t)((c0 + d) * 8), fuel_y)) break;
-            }
-            /* Si en esta fila no hay NINGUN sitio valido (cauce cerrado por la
-             * viga del puente), entonces si se retira. */
-            if (d >= VC_MAP_COLS) fuel_active = 0;
-            else {
-                /* 1 px por frame hacia el agua: desplazarlo de golpe hacia que
-                 * el bidon saltara de sitio de un frame a otro. */
-                uint8_t tx = (uint8_t)((c0 < d ? (c0 + d) : (c0 - d)) * 8);
-                if (fuel_x < tx) fuel_x++;
-                else if (fuel_x > tx) fuel_x--;
-            }
-        }
+        if (!reubicar_al_agua(&fuel_x, fuel_y)) fuel_active = 0;
         return;
     }
 
     if (world_row >= fuel_next) {
         /* Aparece en AGUA navegable de la fila por la que entra. */
-        uint8_t r0 = FILA_CINTA(0);
-        uint8_t cols = 0;
-        uint8_t k;
-
-        for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
-            if (sprite_cabe((uint16_t)(k * 8), 0)) cols++;
-        }
-        if (cols == 0) { fuel_next = world_row + 4; return; }
-
-        {
-            uint8_t pick = (uint8_t)(rng_next() % cols);
-            for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
-                if (sprite_cabe((uint16_t)(k * 8), 0)) {
-                    if (pick == 0) break;
-                    pick--;
-                }
-            }
-        }
-        fuel_x = (uint8_t)(k * 8);
+        uint8_t x = columna_libre();
+        if (x == 0xFF) { fuel_next = world_row + 4; return; }
+        fuel_x = x;
         fuel_y = 0;
         fuel_active = 1;
         fuel_next = world_row + 30;
@@ -2696,9 +2715,12 @@ static void reset_game(void) {
     /* Balas, barco, deposito. */
     for (row = 0; row < NBULLETS; row++) bullet_alive[row] = 0;
     fire_cooldown = 0;
-    boat_active = 0;
-    boat_next   = 40;
-    boat_dir    = 0;
+    ene_active[ENEMIGO_BOAT] = 0;
+    ene_active[ENEMIGO_HELI] = 0;
+    ene_next[ENEMIGO_BOAT]   = 40;
+    ene_next[ENEMIGO_HELI]   = 56;
+    ene_dir[ENEMIGO_BOAT]    = 0;
+    ene_dir[ENEMIGO_HELI]    = 0;
     boom_active = 0;
     boom_frames = 0;
     fuel_active = 0;

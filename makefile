@@ -50,8 +50,14 @@ APP_OBJECTS += $(BUILD_DIR)/perf.o
 PERF_FLAGS = -DPERF
 endif
 
+# DBG=0 quita las variables de DIAGNOSTICO ($03E0-$03EA) que leen los
+# scripts de tools/. Solo hace falta cuando el binario no cabe en RAM.
+ifeq ($(DBG),0)
+DBG_FLAGS = -DDBG=0
+endif
+
 # Flags
-CFLAGS  = -t none -O --cpu 6502 -I include $(PERF_FLAGS)
+CFLAGS  = -t none -O --cpu 6502 -I include $(PERF_FLAGS) $(DBG_FLAGS)
 ASFLAGS = -t none --cpu 6502
 LDFLAGS = -C $(LD_CONFIG) -m $(MAP_FILE)
 

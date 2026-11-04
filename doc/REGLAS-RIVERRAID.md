@@ -38,6 +38,7 @@ Estado de cada regla respecto al código actual:
 |---|---|---|
 | 3.1 | **Barco**: avanza por el agua en sentido contrario. | OK |
 | 3.2 | **Helicóptero**: vuela por el agua moviéndose lateralmente. | OK |
+| 3.2b | **Barco y helicóptero pueden estar en pantalla a la vez**, cada uno con su sprite, pero **nunca a la misma altura** (≥20 px de separación). | OK — dos objetos independientes (`ene[]`); si el que va a nacer coincidiría en altura, espera al siguiente turno |
 | 3.3 | **Ninguno de los dos sale a tierra**: si llegan al borde del agua **rebotan y cambian de dirección**. | OK — los límites salen del perfil de su fila, recalculados cada frame (incluye la isla) |
 | 3.4 | Si el avión choca con un barco/helicóptero **pierde una vida** (y el enemigo explota). | OK |
 | 3.5 | Disparar a un barco/heli lo destruye (puntos). | OK |

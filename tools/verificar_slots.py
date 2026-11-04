@@ -19,15 +19,16 @@ from pathlib import Path
 GAME_C = Path(__file__).resolve().parent.parent / "game.c"
 
 # nombre -> (slot base, cuantos sprites contiguos usa)
-# El barco y el helicoptero COMPARTEN slot a proposito: draw_boat() dibuja uno
-# u otro, nunca los dos. Se comprueba con la clave SPR_ENEMIGO.
+# El barco y el helicoptero tienen slots PROPIOS desde que pueden aparecer los
+# dos a la vez: cada uno se comprueba por separado.
 FAMILIAS = {
     "SPR_HUD_BASE": 4,     # puntos 0..3
     "SPR_HUD_FUEL": 0,     # se expande con HUD_FUEL_W
     "SPR_HUD_LIVES": 2,    # icono + numero
     "SPR_PLANE": 1,
     "SPR_BOOM": 1,         # explosion / bomba: un sprite, 3 patrones
-    "SPR_ENEMIGO": 1,      # barco o helicoptero
+    "SPR_BOAT": 1,
+    "SPR_HELI": 1,
     "SPR_BULLET": 2,       # pool de 2 balas
     "SPR_FUEL": 1,
 }
@@ -52,13 +53,6 @@ def main():
         print("no encuentro HUD_FUEL_W en game.c")
         return 1
     FAMILIAS["SPR_HUD_FUEL"] = d["HUD_FUEL_W"]
-    d["SPR_ENEMIGO"] = d["SPR_BOAT"]
-
-    # Los dos tipos de enemigo tienen que caer en el mismo slot.
-    if d["SPR_BOAT"] != d["SPR_HELI"]:
-        print(f"barco ({d['SPR_BOAT']}) y helicoptero ({d['SPR_HELI']}) "
-              "deberian compartir slot")
-        return 1
 
     ocupados = {}
     for nombre, ancho in FAMILIAS.items():
