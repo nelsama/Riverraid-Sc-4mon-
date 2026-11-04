@@ -440,7 +440,9 @@ static uint8_t   plane_dead;
 /* Explosion del avion: frames que le quedan y su posicion en el momento del
  * choque. Se dibuja DONDE murio el avion, no donde reaparece. */
 static uint8_t   plane_blast;
-static uint16_t  plane_blast_x;
+/* X del choque en 8 bits: plane_x nunca pasa de PLANE_MAX_X (232), asi que el
+ * byte alto era siempre 0. */
+static uint8_t   plane_blast_x;
 static uint8_t   plane_blast_y;
 static uint8_t   esperando_fire;   /* 1 = avion fijo, rio parado, espera FIRE */
 
@@ -2203,6 +2205,9 @@ static uint8_t plane_on_bank(uint16_t x, uint8_t y) {
 /* Muerte del avion: resta una vida, dibuja la EXPLOSION en el sitio del
  * choque y, cuando el fuego se apaga, deja el avion listo para reaparecer. */
 static void plane_hit(void) {
+    /* Con `plane_dead` basta: se pone a 1 aqui y solo vuelve a 0 cuando el
+     * jugador pulsa FIRE. El otro instante en que el avion esta en pantalla
+     * sin jugar (esperando FIRE) lo cubre la guarda de check_plane_collisions(). */
     if (plane_dead) return;
     plane_dead = 1;
     snd_explode();
@@ -2210,7 +2215,7 @@ static void plane_hit(void) {
     /* La explosion se ancla DONDE esta el avion ahora: si se dibujara en
      * plane_x/plane_y tras llamar a plane_place_safe() saldria en el punto de
      * reaparicion, que es justo donde el jugador no ha chocado. */
-    plane_blast_x = plane_x;
+    plane_blast_x = (uint8_t)plane_x;
     plane_blast_y = plane_y;
     plane_blast = PLANE_BLAST_FRAMES;
 
@@ -2373,21 +2378,22 @@ static void check_bullet_collisions(void) {
 static void check_plane_collisions(void) {
     uint8_t last_bank;
 
-    if (plane_dead) return;
+    /* El avion NO recibe golpes mientras esta muerto o esperando FIRE.
+     *
+     * OJO CON esperando_fire: tras la explosion el avion REAPARECE en pantalla
+     * y el rio queda parado hasta que el jugador pulse FIRE. Antes se seguia
+     * comprobando la colision en ese estado y, como gen_restore_checkpoint()
+     * rebobina el trazado, el avion podia quedar encima de la orilla y morir
+     * solo: el segundo petardazo. */
+    if (plane_dead || plane_blast || esperando_fire) return;
 
     /* AVION <-> ORILLA / ISLA.
      *
-     * OJO: no se puede cachear el resultado por (x, y) del sprite. La respuesta
-     * depende tambien de la fila de cinta que pasa por debajo, y con filas de
-     * 8 px y 1 px de scroll por frame esa fila cambia en el 12% de los frames:
-     * con cache, el avion moria solo en mitad del cauce. Son 3 consultas a RAM
-     * por frame, coste despreciable. Se miran las TRES filas de cinta que ocupa
-     * el sprite (arriba, centro y abajo); con un sprite de 16 px el borde del
-     * canal puede cambiar a mitad del avion. */
-    /* Se miran TODAS las filas de cinta que ocupa el sprite (16 px = 3 filas),
-     * no solo arriba/centro/abajo: con 1 px de scroll por frame la orilla entra
+     * Se miran TODAS las filas de cinta que ocupa el sprite (16 px = 3), no
+     * solo arriba/centro/abajo: con 1 px de scroll por frame la orilla entra
      * por una fila intermedia y el avion se metia medio sprite en la arena sin
-     * que saltara la colision. */
+     * que saltara la colision. NO se puede cachear por (x, y): la respuesta
+     * depende de la fila de cinta que pasa debajo, que cambia con el scroll. */
     {
         /* Las TRES filas de cinta que ocupa un sprite de 16 px, cada una por su
          * banda: 0-7, 8-15 y 16-23 desde plane_y. Mirar solo y, y+7, y+8 y
@@ -2667,8 +2673,11 @@ static void update_fuel_gauge(void) {
         fuel--;
     }
 
-    if (fuel == 0 && !plane_dead) {
-        /* Sin combustible: muere el avion (pierde una vida). */
+    if (fuel == 0 && !plane_dead && !esperando_fire) {
+        /* Sin combustible: muere el avion (pierde una vida).
+         * OJO con esperando_fire: ahi el rio esta PARADO y el jugador aun no ha
+         * pulsado FIRE; si el deposito se habia quedado a 0, sin esta guarda el
+         * avion volvia a explotar sin culpa del jugador. */
         DBG_MUERTE = 3;
         plane_hit();
     }
