@@ -217,7 +217,6 @@ static uint8_t  scroll_step;
 #define TILE_TREE     0x1B   /* arbusto sobre la isla central            */
 #define TILE_PANEL    0x1C   /* fondo solido del panel de GAME OVER       */
 #define TILE_BRIDGE   0x1D   /* viga del puente, variante A (madera)      */
-#define TILE_BRIDGE_B 0x1F   /* viga, variante B (alterna por fila)       */
 #define TILE_ROAD     0x1E   /* calle del puente, sobre el cesped        */
 
 /* ===========================================================================
@@ -387,7 +386,7 @@ static uint16_t rng_state;
  * scroll y hay que usar FILA_CINTA(plane_y + dy). */
 #define PLANE_Y    (4 + 8 * 22)          /* = 180: altura fija, abajo */
 
-static uint16_t plane_x;
+static uint8_t  plane_x;   /* 8 bits: nunca pasa de 232 ni baja de 48 */
 static uint8_t  plane_y;
 static uint16_t scroll_val;   /* valor del registro de scroll (0..255) */
 static uint8_t  scroll_speed; /* 1/8 px por frame: SCROLL_MIN..SCROLL_MAX */
@@ -425,6 +424,12 @@ static uint8_t  boom_active;
 static uint8_t  boom_x;
 static uint8_t  boom_y;
 static uint8_t  boom_frames;
+
+/* DESTELLO DEL PUENTE: al reventar la viga el agua se ve un momento en azul
+ * claro (como en el original) y luego vuelve a su color. Se lleva aqui porque
+ * la paleta del agua la comparten todas las filas: no se puede pintar "un
+ * trozo" mas claro, se aclara el agua entera unos frames. */
+static uint8_t  puente_flash;        /* frames de destello que quedan */
 
 /* Columna de la isla de la fila anterior (para islas de 2 filas). */
 
@@ -578,11 +583,6 @@ static const uint8_t tile_bridge_p0[8] = { 0xFF,0xFF,0xFB,0xFF,0xFF,0xFE,0xFF,0x
 /* PLAN1 lleva un 1 en las mismas columnas que los ceros de PLAN0, para que la
  * veta pase de indice 0 (transparente) a indice 3. */
 static const uint8_t tile_bridge_p1[8] = { 0x00,0x00,0x04,0x00,0x00,0x01,0x00,0x00 };
-/* Variante B: las vetas caen en otras columnas, para que la madera no se vea
- * repetida. Mismo criterio: PLAN0 todo a 1 (tabla, indice 2) y PLAN1 con 1 en
- * las columnas de veta (indice 3). */
-static const uint8_t tile_bridge_b_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
-static const uint8_t tile_bridge_b_p1[8] = { 0x00,0x20,0x00,0x00,0x04,0x00,0x00,0x00 };
 
 
 /* CALLE DEL PUENTE (TILE_ROAD): la franja de tierra que llega a los dos lados
@@ -595,8 +595,8 @@ static const uint8_t tile_road_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
 /* Fondo del panel de GAME OVER: opaco y en INDICE 1, que en PAL_MENU es el
  * NEGRO. La fuente siempre pinta el indice 3 (BLANCO en PAL_MENU), asi que
  * cada pieza usa un indice distinto. Con un tile transparente (0) se veria el rio. */
-static const uint8_t tile_panel_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
-static const uint8_t tile_panel_p1[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
+/* (tile_panel_p0/p1: fondo del panel de GAME OVER, ELIMINADO junto con el
+ * panel. No se usaban y ocupaban bytes de RODATA.) */
 
 /* Agua OPACA: fondo azul claro (indice 3) con oleaje suave en un azul
  * intermedio (indice 2). Se evita SIEMPRE el indice 0 (transparente), que
@@ -661,9 +661,8 @@ static const uint8_t hud_digit[10][8] = {
 static const uint8_t hud_lives_pat[8] = { 0x18,0xFF,0x7E,0x3C,0x24,0x18,0x18,0x00 };
 /* Variante morada (indices 1 y 2 = azul y cian) para poder comparar las dos
  * en el emulador antes de quedarse con una. */
-static const uint8_t hud_lives2_pat[8] = {
-    0x22,0x11,0x1B,0x0C,0x0C,0x0C,0x0C,0x00
-};
+/* (hud_lives2_pat: icono de vida alternativo morado, ELIMINADO. No se usaba y
+ * ocupaba bytes de RODATA que hacian falta.) */
 
 /* Celdas de la barra de combustible (llena / vacia). Paleta 1:
  *   llena = columnas 0-6 en indice 3 (blanco #FFFFFF); la columna 7 queda
@@ -768,9 +767,9 @@ static void read_input(void) {
         char c = rom_uart_getc();
         switch (c) {
             case 'a': case 'A': case 'j': case 'J': case '4': case 0x12:
-                if (plane_x > PLANE_MIN_X) plane_x = (uint16_t)(plane_x - PLANE_SPEED); break;
+                if (plane_x > PLANE_MIN_X) plane_x = (uint8_t)(plane_x - PLANE_SPEED); break;
             case 'd': case 'D': case 'l': case 'L': case '6': case 0x13:
-                if (plane_x < PLANE_MAX_X) plane_x = (uint16_t)(plane_x + PLANE_SPEED); break;
+                if (plane_x < PLANE_MAX_X) plane_x = (uint8_t)(plane_x + PLANE_SPEED); break;
             case 'w': case 'W': case 'i': case 'I': case '8': case 0x10:
                 if (scroll_speed < SCROLL_MAX) scroll_speed++; break;
             case 's': case 'S': case 'k': case 'K': case '2': case 0x11:
@@ -993,10 +992,10 @@ static void hud_draw(void) {
 #define GEN_PIER_L     12     /* borde izquierdo del cauce en el puente   */
 #define GEN_PIER_R     27     /* borde derecho (= 12..27 con orillas)     */
 #define GEN_FUNNEL_BLK 14     /* primer bloque de embudo (14 y 15)        */
-/* HUECO DEL PUENTE: dos celdas de agua en el centro de la viga. GEN_PIER_L..R
- * es 12..27, o sea centro 19/20. El avion (16 px = 2 celdas) cabe justo. */
-#define BRIDGE_GAP_L   19
-#define BRIDGE_GAP_R   20
+/* PUENTE MACIZO: el travesaño cruza el cauce ENTERO, sin hueco. En el River
+ * Raid de verdad el avion vuela a la altura del puente, asi que no hay forma de
+ * esquivarlo: si llegas sin haberlo destruido, chocas. Antes habia un hueco de
+ * dos celdas (19..20) por el que se pasaba de lado, y eso NO es del original. */
 /* ALTO DEL PUENTE en filas de mundo (8 px cada una). El bloque del puente dura
  * GEN_BLOCK = 16 filas (128 px de pantalla), o sea media pantalla de viga: en
  * el arcade el puente es un travesaño fino. Solo las PRIMERAS filas del bloque
@@ -1574,21 +1573,18 @@ static uint8_t generate_world_row(uint32_t n) {
                 tile = wave;                             attr = PAL_WATER;
             }
 
-            /* --- PUENTE: viga maciza con un HUECO en el centro ----
-             * La viga cruza todo el cauce (gen_left..gen_right) salvo las dos
-             * celdas del hueco, que es por donde se pasa. Antes se tapaba el
-             * cauce ENTERO y el avion volaba sobre la viga: no habia puente que
-             * cruzar, solo una franja de arena. El hueco esta en el centro del
-             * cauce, que es a donde converge el embudo (GEN_PIER_L..R), asi que
-             * siempre cae en la misma columna y el jugador puede anticiparlo. */
+            /* --- PUENTE: travesaño macizo de orilla a orilla -------------
+             * Antes tenia un HUECO de dos celdas por el que se pasaba
+             * esquivandolo. Eso NO es el River Raid: el avion vuela a la altura
+             * del puente, asi que no se esquiva, se DESTRUYE (con misil, o
+             * chocando). Aqui la viga cruza el cauce entero. */
             if (puente_bit[cinta_row]) {
-                if (col >= gen_left && col <= gen_right &&
-                    (col < BRIDGE_GAP_L || col > BRIDGE_GAP_R)) {
+                if (col >= gen_left && col <= gen_right) {
                     /* VIGA: mismo patron que la calle, pero en el indice 3 de
                      * PAL_ISLAND (madera) para que se distinga del camino. */
                     /* VIGA: dos variantes que alternan por fila de cinta, para
                      * que la madera no se vea como una banda lisa. */
-                    tile = (uint8_t)((cinta_row & 1) ? TILE_BRIDGE_B : TILE_BRIDGE);
+                    tile = TILE_BRIDGE;
                     attr = PAL_WOOD;           /* 2 = tabla, 3 = junta */
                 } else if (col < gen_left || col > gen_right) {
                     /* CALLE: la franja de tierra que llega a los lados del
@@ -1668,10 +1664,7 @@ static void load_patterns(void) {
 
     fv_load_bg_pattern(TILE_BRIDGE,  tile_bridge_p0,  tile_bridge_p1);
     fv_load_bg_pattern(TILE_TREE,    tile_tree_p0,    tile_tree_p1);
-    fv_load_bg_pattern(TILE_BRIDGE_B, tile_bridge_b_p0, tile_bridge_b_p1);
     fv_load_bg_pattern(TILE_ROAD,    tile_bridge_p1,  tile_road_p1);
-    /* Fondo opaco del panel de GAME OVER (TILE_PANEL usa el indice 1). */
-    fv_load_bg_pattern(TILE_PANEL,   tile_panel_p0,   tile_panel_p1);
 
     fv_load_spr_pattern(SPR_PLANE_PAT, spr_plane_p0, spr_plane_p1);
     fv_load_spr_pattern(SPR_BOAT_PAT,  spr_boat_p0,  spr_boat_p1);
@@ -1689,7 +1682,6 @@ static void load_patterns(void) {
         for (d = 0; d < 10; d++)
             fv_load_spr_pattern((uint8_t)(HUD_PAT_DIGIT0 + d), hud_digit[d], hud_digit[d]);
         fv_load_spr_pattern(HUD_PAT_LIVES, hud_lives_pat, hud_lives_pat);
-        fv_load_spr_pattern(HUD_PAT_LIVES2, hud_lives2_pat, hud_lives2_pat);
         fv_load_spr_pattern(HUD_PAT_BAR_ON, hud_bar_on, hud_bar_on);
         fv_load_spr_pattern(HUD_PAT_BAR_OFF, hud_bar_off, hud_bar_off);
     }
@@ -2126,14 +2118,106 @@ static uint8_t celda_agua(uint8_t cinta_row, uint8_t c) {
     if (c <= l || c >= r) return 0;
     if (il != 0xFF && c >= il && c <= ir) return 0;
 
-    /* PUENTE: la viga es solida salvo por el hueco. */
-    if (puente_bit[cinta_row] && (c < BRIDGE_GAP_L || c > BRIDGE_GAP_R)) return 0;
+    /* PUENTE: la viga cruza el cauce entero, sin hueco. Tocar = chocar. */
+    if (puente_bit[cinta_row]) return 0;
     return 1;
 }
 
 /* Lo contrario: cesped, orilla, isla o viga. */
 static uint8_t celda_en_tierra(uint8_t cinta_row, uint8_t c) {
     return (uint8_t)(!celda_agua(cinta_row, c));
+}
+
+/* ===========================================================================
+ * DESTELLO DEL PUENTE
+ * ===========================================================================
+ * Al reventar la viga, el agua pasa unos frames a AZUL CLARO y luego vuelve a
+ * su color, como en el original. No se puede aclarar "solo el trozo" del
+ * puente: las filas comparten la paleta PAL_WATER, asi que se aclara el agua
+ * entera mientras dura el destello. Son 6 escrituras al empezar y 6 al acabar,
+ * o sea mas barato que repintar celdas. */
+#define PUENTE_FLASH_FRAMES  14   /* ~0,23 s a 60 Hz: se ve el fogonazo */
+
+/* El destello se escribe DIRECTO al puerto ($D813-$D815) en vez de llamar a
+ * vid_pal_set_bg() seis veces: esa funcion es normal (no inline) y cada llamada
+ * cuesta prólogo, calculo de entrada y salto. Aqui se fija el puntero UNA vez y
+ * se dejan caer los 3 colores seguidos, que el core auto-incrementa. */
+#define PAL_AGUA_BASE  VC_PAL_BG(PAL_WATER, 1)   /* = paleta*4 + color 1 */
+
+/* Colores RGB444 como LITERALES (no con VC_RGB444, que es macro y genera
+ * aritmetica en cada uso). Formato 0xRGB. */
+static void puente_flash_on(void) {
+    VID_PAL_PTR = PAL_AGUA_BASE;
+    VID_PAL_LO  = 0x6F;  VID_PAL_HI = 0x02;   /* 1: azul medio   #0026 FF */
+    VID_PAL_LO  = 0x9F;  VID_PAL_HI = 0x04;   /* 2: oleaje claro        */
+    VID_PAL_LO  = 0xDF;  VID_PAL_HI = 0x08;   /* 3: azul casi blanco    */
+}
+
+static void puente_flash_off(void) {
+    VID_PAL_PTR = PAL_AGUA_BASE;
+    VID_PAL_LO  = 0xA2;  VID_PAL_HI = 0x00;   /* 1: #0022AA (original)  */
+    VID_PAL_LO  = 0xE4;  VID_PAL_HI = 0x01;   /* 2: #1144EE (oleaje)    */
+    VID_PAL_LO  = 0xF6;  VID_PAL_HI = 0x02;   /* 3: #2266FF (claro)     */
+}
+
+static void update_puente_flash(void) {
+    if (!puente_flash) return;
+    if (--puente_flash) return;
+    puente_flash_off();
+}
+
+/* Destruye el PUENTE que hay debajo del avion.
+ *
+ * Se llama al chocar con la viga: en el original, si llegas al puente sin
+ * haberlo volado, se destruyen los dos. Tiene que ir ANTES de plane_hit(),
+ * porque esa funcion restaura el checkpoint y volveria a poner el puente.
+ *
+ * Se borra la viga de las TRES filas de cinta que ocupa el sprite, repintando
+ * esas celdas como agua: si solo se apagara puente_bit[], la colision dejaria
+ * de matar pero la madera seguiria dibujada. */
+static void puente_destruir_bajo_avion(void) {
+    uint8_t k;
+
+    for (k = 0; k < PLANE_H; k++) {
+        uint8_t cr = FILA_CINTA((uint8_t)(plane_y + k));
+        uint8_t col;
+
+        if (!puente_bit[cr]) continue;
+        puente_bit[cr] = 0;
+
+        for (col = (uint8_t)(river_l[cr] + 1); col < river_r[cr]; col++) {
+            fv_cell((uint16_t)(((uint16_t)cr << 6) + col),
+                    (uint8_t)((cr & 1) ? TILE_WATER2 : TILE_WATER));
+        }
+    }
+    puente_flash = PUENTE_FLASH_FRAMES;
+    puente_flash_on();
+}
+
+/* PUENTE <-> BALA: un disparo se lleva la fila ENTERA de orilla a orilla.
+ *
+ * Es el comportamiento del original: el puente no se esquiva ni se marca a
+ * trozos, se revienta de un tiro. Devuelve 1 si la bala i ha dado al puente.
+ * El repintado va AQUI y no en una funcion aparte: en cc65 sacarlo a funcion
+ * propia costaba ~150 bytes mas de los que no hay (prólogo, epílogo y
+ * llamada), y esto entra una sola vez por disparo. */
+static uint8_t puente_toca_bala(uint8_t i) {
+    uint8_t cr = FILA_CINTA(bullet_y[i]);
+    uint8_t c  = (uint8_t)(BULLET_HIT_X(i) >> 3);
+    uint8_t col;
+
+    if (!puente_bit[cr]) return 0;
+    /* Solo si la bala cae sobre el cauce (la calle de los lados es terreno). */
+    if (c <= river_l[cr] || c >= river_r[cr]) return 0;
+
+    puente_bit[cr] = 0;
+    for (col = (uint8_t)(river_l[cr] + 1); col < river_r[cr]; col++) {
+        fv_cell((uint16_t)(((uint16_t)cr << 6) + col),
+                (uint8_t)((cr & 1) ? TILE_WATER2 : TILE_WATER));
+    }
+    puente_flash = PUENTE_FLASH_FRAMES;
+    puente_flash_on();
+    return 1;
 }
 
 /* Caben los 16x16 px de un sprite con origen en (x, y)?
@@ -2215,7 +2299,7 @@ static void plane_hit(void) {
     /* La explosion se ancla DONDE esta el avion ahora: si se dibujara en
      * plane_x/plane_y tras llamar a plane_place_safe() saldria en el punto de
      * reaparicion, que es justo donde el jugador no ha chocado. */
-    plane_blast_x = (uint8_t)plane_x;
+    plane_blast_x = plane_x;
     plane_blast_y = plane_y;
     plane_blast = PLANE_BLAST_FRAMES;
 
@@ -2292,15 +2376,15 @@ static void plane_place_safe(void) {
     }
 
     if (mejor != 0xFF) {
-        plane_x = (uint16_t)((uint16_t)mejor * 8 + 8) - (PLANE_W / 2);
+        plane_x = (uint8_t)((uint8_t)(mejor * 8 + 8) - (PLANE_W / 2));
     } else if (fallo != 0xFF) {
-        plane_x = (uint16_t)((uint16_t)fallo * 8 + 8) - (PLANE_W / 2);
+        plane_x = (uint8_t)((uint8_t)(fallo * 8 + 8) - (PLANE_W / 2));
     } else {
         /* Nada cabe (embudo junto al puente): al centro del agua de la fila
          * central. Es preferible a dejarlo clavado contra la orilla. */
         for (k = GEN_ZONE_L; k <= GEN_ZONE_R; k++) {
             if (celda_agua(FILA_CINTA(plane_y), k)) {
-                plane_x = (uint16_t)(k * 8) - 4;
+                plane_x = (uint8_t)(k * 8 - 4);
                 break;
             }
         }
@@ -2322,6 +2406,14 @@ static void check_bullet_collisions(void) {
         if (bullet_y[i] < 4) {
             bullet_alive[i] = 0;
             continue;
+        }
+
+        /* PUENTE <-> BALA: solo DETECTA aqui; la explosion y el consumo de la
+         * bala se comparten con la de enemigos/bidon saltando a `explota`. */
+        if (puente_toca_bala(i)) {
+            boom_x = (uint8_t)(BULLET_HIT_X(i) & 0xF8);
+            boom_y = (uint8_t)(bullet_y[i] - 4);
+            goto explota;
         }
 
         /* Bala <-> ENEMIGOS y <-> BIDON (caja AABB).
@@ -2411,6 +2503,11 @@ static void check_plane_collisions(void) {
     }
     if (last_bank) {
         DBG_MUERTE = 1;
+        /* Si lo que habia debajo era la VIGA del puente, el puente se destruye
+         * con el avion: es lo que pasa en el original al chocar sin haberlo
+         * volado antes. Se hace ANTES de plane_hit() porque esa funcion
+         * restaura el checkpoint (o sea, vuelve a poner el puente). */
+        puente_destruir_bajo_avion();
         plane_hit();
         return;
     }
@@ -2872,6 +2969,9 @@ static void reset_game(void) {
     ene_dir[ENEMIGO_HELI]    = 0;
     boom_active = 0;
     boom_frames = 0;
+    /* El destello del puente cambia la PALETA del agua: si se reinicia en mitad
+     * del fogonazo, el agua se quedaria clara toda la partida. */
+    puente_flash = 0;
     fuel_active = 0;
     fuel_next   = 2;
     /* Reinicia el generador del rio (LFSR del original).
@@ -3038,6 +3138,7 @@ int main(void) {
             update_boat();
             update_fuel();
             update_boom();
+            update_puente_flash();
             update_fuel_gauge();
         }
         perf_mark(0);

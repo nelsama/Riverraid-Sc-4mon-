@@ -49,9 +49,11 @@ Estado de cada regla respecto al código actual:
 
 | # | Regla | Estado |
 |---|---|---|
-| 4.1 | El **puente** cruza el río de orilla a orilla; el agua pasa por debajo. | PARCIAL — `TILE_BRIDGE` de `gen_left` a `gen_right`, con hueco. Falta que el agua se vea POR DEBAJO (hoy es viga maciza en la fila) |
-| 4.2 | El puente **tapa** (prioridad de tile) al avión cuando pasa bajo él. | FALTA |
-| 4.3 | Al llegar al puente hay que **pasar por el hueco del puente**; si el avión toca el puente → pierde una vida. | OK — hueco `BRIDGE_GAP_L/R`=19..20, `puente_bit[]` en RAM para la colisión |
+| 4.1 | El **puente** cruza el río de orilla a orilla. | OK — `TILE_BRIDGE` (viga) de `gen_left` a `gen_right`, más `TILE_ROAD` (calle) sobre el césped a los lados, en las mismas filas. Sin hueco: la viga es maciza. |
+| 4.2 | El puente **tapa** (prioridad de tile) al avión cuando pasa bajo él. | N/A — el avión vuela a la altura del puente y no pasa por debajo; chocarse o volarlo es la única opción (ver 4.3). |
+| 4.3 | Si el avión **choca** con el puente, se destruyen **los dos**: pierde una vida y la viga desaparece. | OK — `puente_destruir_bajo_avion()` borra la viga de las filas que ocupa el sprite y repinta agua. Se llama ANTES de `plane_hit()`. |
+| 4.3b | El puente se puede **destruir de un disparo**; el tiro se lleva la viga **entera** de orilla a orilla. | OK — `puente_toca_bala()`: apaga `puente_bit[]` de esa fila y repinta el tramo como agua. |
+| 4.3c | Al reventar el puente aparece una **explosión** y el agua se ve un momento en **azul más claro**, luego vuelve a su color. | OK — sprite `boom` reutilizado + destello de `PAL_WATER` durante `PUENTE_FLASH_FRAMES` (14 frames), restaurado en `update_puente_flash()`. |
 | 4.4 | Cruzar un puente **completa un nivel**: la puntuación "congelada" (ver 6.3) se suma y empieza el nivel siguiente. | PARCIAL — el checkpoint LFSR funciona (morir repite el tramo). Falta puntuación y subida de dificultad |
 | 4.5 | Cada puente lleva su **tanque** cerca (3.6). | FALTA |
 
