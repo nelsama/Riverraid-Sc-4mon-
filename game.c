@@ -264,7 +264,11 @@ static uint8_t  scroll_step;
 #define SPR_HELI       14    /* slot PROPIO: antes compartia el 13 con el
                               * barco y solo podia haber un enemigo. */
 #define SPR_HELI_PAT   9
-#define SPR_BULLET     17    /* 17 y 18 (pool de 2 balas) */
+#define SPR_BULLET     19    /* 19 y 20 (pool de 2 balas). Tiene que quedar
+                              * FUERA de 16 (bidon) y de 13/14 (enemigos):
+                              * draw_fuel() y draw_enemy() no reescriben el
+                              * TILE en cada frame, asi que si otro objeto
+                              * comparte slot le deja su patron. */
 #define SPR_BULLET_PAT 14
 /* Desfase entre el ORIGEN del sprite de la bala y su dibujo: el patron ocupa
  * las columnas 3 y 4, asi que el dibujo empieza en bullet_x + BULLET_OFF_X y
@@ -348,11 +352,13 @@ static uint16_t rng_state;
 
 /* DIAGNOSTICO: causa de la ultima muerte del avion.
  *   0 = sin morir, 1 = orilla/isla/viga, 2 = enemigo, 3 = sin combustible
- * Se guarda en direcciones FIJAS de la zero page ($03E0-$03E4, libres: el
- * monitor usa $02-$1F y la libreria $20-$3A) para poder leerlas desde el
- * emulador con /ram.bin. Las tres ultimas son el detalle del choque contra la
- * orilla (fila de cinta, columna y los dos bordes del agua), que es lo que
- * permite auditar si un choque fue justo: tools/auditar_choques.py. */
+ * Las de 0x03E1-0x03E4 son el detalle del choque contra la orilla (fila de
+ * cinta, columna y los dos bordes del agua): tools/auditar_choques.py.
+ *
+ * OJO: las de 0x03E5-0x03EA (recarga de combustible) se QUITARON para
+ * recuperar RAM: nadie las leia ya y ocupaban codigo en el bucle de frame. Si
+ * se vuelven a necesitar, van en $03E5 en adelante (la pila empieza en $3DFF).
+ * Se leen desde el emulador con /ram.bin. */
 #define DBG_MUERTE (*(volatile uint8_t *)0x03E0)
 #define DBG_FILA   (*(volatile uint8_t *)0x03E1)
 #define DBG_COL    (*(volatile uint8_t *)0x03E2)
@@ -363,12 +369,6 @@ static uint16_t rng_state;
  * contadores que se actualizan una vez por frame; sirven para medir con
  * /ram.bin cuanto sube `fuel` y cuantos frames dura el contacto, sin depender
  * de capturas de pantalla ni del reloj de pared. */
-#define DBG_FUEL        (*(volatile uint8_t *)0x03E5)  /* valor de fuel ahora  */
-#define DBG_FUEL_ON     (*(volatile uint8_t *)0x03E6)  /* 1 = bidon en pantalla */
-#define DBG_TICK        (*(volatile uint8_t *)0x03E7)  /* fuel_refuel_tick     */
-#define DBG_TOUCH       (*(volatile uint8_t *)0x03E8)  /* 1 = tocando el bidon */
-#define DBG_PX          (*(volatile uint8_t *)0x03E9)  /* plane_x              */
-#define DBG_FX          (*(volatile uint8_t *)0x03EA)  /* fuel_x               */
 
 /* El avion se dibuja con su esquina superior en plane_y. Para que este CENTRADO
  * en las filas de cinta que ocupa, el centro (plane_y + PLANE_H/2) debe caer en
@@ -1289,6 +1289,7 @@ static uint8_t generate_world_row(uint32_t n) {
      * gen_block_row, que vale 0 en la primera fila del bloque. */
     {
         uint8_t es_viga = (uint8_t)(gen_bridge && gen_block_row < BRIDGE_ROWS);
+        /* Un bit por fila: al regenerar hay que poner O quitar el suyo. */
         puente_bit[cinta_row] = es_viga;
 
         /* Cruzar el puente = nuevo checkpoint, una vez por puente: cuenta en la
@@ -2454,8 +2455,15 @@ static void update_enemy(uint8_t i) {
         /* Si el cauce se cerro a su lado, se desplaza AL AGUA MAS CERCANA,
          * pero **1 px por frame**: moviendolo de golpe saltaba de una celda a
          * otra y el jugador lo veia teletransportarse. Si se sale de la
-         * pantalla por arriba/abajo no se mueve de lado. */
-        if (!reubicar_al_agua(&ene_x[i], ene_y[i])) { ene_active[i] = 0; return; }
+         * pantalla por arriba/abajo no se mueve de lado.
+         *
+         * OJO: SOLO si de verdad se sale del agua. Llamarlo en cada frame le
+         * ganaba al rebote: el sprite de 16 px casi nunca cae en columnas
+         * exactas de 8, asi que el "objetivo" oscilaba entre la celda de la
+         * izquierda y la de la derecha y el enemigo se movia solo, sin llegar
+         * nunca a la orilla (medido: 0 rebotes en 600 frames, 23 saltos). */
+        if (!sprite_cabe(ene_x[i], ene_y[i]) &&
+            !reubicar_al_agua(&ene_x[i], ene_y[i])) { ene_active[i] = 0; return; }
 
         /* Deriva lateral con rebote: 1 px cada pocos frames. El HELICOPTERO
          * tambien queda sujeto al cauce; en el arcade vuela sobre el agua. */
@@ -2508,8 +2516,14 @@ static void update_fuel(void) {
         /* El rio cambia de ancho y de sitio: si la fila por la que pasa el
          * bidon deja de ser agua donde esta, SE MUEVE LATERALMENTE al agua mas
          * cercana en vez de desaparecer. Antes se apagaba de golpe y el jugador
-         * veia bidones que parpadeaban a media pantalla. */
-        if (!reubicar_al_agua(&fuel_x, fuel_y)) fuel_active = 0;
+         * veia bidones que parpadeaban a media pantalla.
+         *
+         * OJO: solo si NO cabe. Llamarlo siempre hacia temblar el bidon: el
+         * agua mas cercana puede estar en la celda de al lado y se movia 1 px
+         * hacia alla en cada frame (medido: 5-8 saltos por partida). */
+        if (!sprite_cabe(fuel_x, fuel_y)) {
+            if (!reubicar_al_agua(&fuel_x, fuel_y)) fuel_active = 0;
+        }
         return;
     }
 
@@ -2534,14 +2548,6 @@ static void update_fuel(void) {
  * recarga. Se llama una vez por frame desde el bucle principal, ANTES de
  * cualquier salida temprana (esperando_fire, game over), para que /ram.bin
  * nunca devuelva valores viejos de un frame o de una partida anterior. */
-static void dbg_dump_fuel(void) {
-    DBG_FUEL    = fuel;
-    DBG_FUEL_ON = fuel_active;
-    DBG_TICK    = fuel_refuel_tick;
-    DBG_TOUCH   = fuel_touching;
-    DBG_PX      = (uint8_t)plane_x;
-    DBG_FX      = fuel_x;
-}
 
 static void update_fuel_gauge(void) {
     if (game_over) return;
@@ -2819,10 +2825,6 @@ int main(void) {
     while (!quit_flag) {
         vid_wait_vblank();
         perf_begin();
-
-        /* Diagnostico: volcar siempre, antes de las salidas tempranas, para que
-         * las lecturas por /ram.bin sean del frame actual. */
-        dbg_dump_fuel();
 
         /* 0) Esperando FIRE (inicio de partida o tras un choque): el avion esta
          * fijo en el punto de partida y el rio NO avanza. Se arranca al disparar. */
