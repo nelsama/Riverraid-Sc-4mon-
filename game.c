@@ -120,11 +120,11 @@ static uint8_t  scroll_step;
  * ningun objeto del juego lo tape: antes el bidon (4) y la explosion (5)
  * pasaban por delante de la barra de combustible y de los digitos.
  *
- *   0-3    puntos  4-10 barra  11-12 vidas
- *   13 avion  14 explosion  15 heli/barco  16-17 balas
+ *   0-3    puntos  4-8 barra  9-10 vidas
+ *   11 avion  12 explosion  13 heli/barco  14-15 balas  16 bidon
  *
  * OJO: al mover slots hay que revisar tambien el comentario de SPR_HUD_BASE. */
-#define SPR_FUEL       18
+#define SPR_FUEL       16
 #define SPR_FUEL_PAT   15
 #define SPR_FUEL_PAL   VC_SPPAL_3
 
@@ -143,8 +143,8 @@ static uint8_t  scroll_step;
  * extra; para ampliar el juego hay que soltar algun sprite o pasar el HUD a
  * tiles con split de raster. */
 #define SPR_HUD_BASE   0       /* puntos: 0..3                       */
-#define SPR_HUD_FUEL   4       /* barra: 4..10                       */
-#define SPR_HUD_LIVES  11      /* icono de vida (11) y numero (12)   */
+#define SPR_HUD_FUEL   4       /* barra: 4..8                        */
+#define SPR_HUD_LIVES  9       /* icono de vida (9) y numero (10)    */
 /* Y=10: la fila 1 del tilemap (pixeles 8..15). La fila 0 (0..7) la recorta
  * el overscan de muchos monitores (manual del core, 1.9 y 5): con Y=2 el HUD
  * quedaba medio fuera de pantalla. Aqui sobra 2 px de margen por arriba. */
@@ -159,13 +159,15 @@ static uint8_t  scroll_step;
  * pieza de la barra ocupa 8 px y el paso HUD_FUEL_STEP es mayor que 8: deja
  * un hueco entre piezas en vez de solaparlas. */
 #define HUD_FUEL_X     24      /* barra de combustible (FILA 2)      */
-#define HUD_FUEL_W     7       /* celdas de la barra: 7 + vidas = 8,
-                                * el maximo del line buffer del core  */
+#define HUD_FUEL_W     5       /* celdas de la barra: 5 + vidas = 6, y
+                                * deja 2 huecos del line buffer (8)
+                                * para los objetos que entran por
+                                * arriba (avion, helicoptero, bidon) */
 /* Paso de 9 px: la pieza mide 7 y deja 1 px transparente (columna 7 del
  * patron) + 1 px de hueco, asi la barra se lee como una barra continua. */
 #define HUD_FUEL_STEP  9       /* 7 px de relleno + 2 px de hueco     */
 /* VIDAS: el icono va en la FILA 1 (a la derecha de los puntos) y el NUMERO en
- * la FILA 2 (a la derecha de la barra). Asi la fila 2 queda en 7+1 = 8
+ * la FILA 2 (a la derecha de la barra). Asi la fila 2 queda en 5+1 = 6
  * sprites y la fila 1 en 4+1 = 5, ambas dentro del limite.
  *
  * OJO CON EL REPARTO: el core de video NO dibuja los 32 sprites uno sobre
@@ -228,8 +230,8 @@ static uint8_t  scroll_step;
  * SPRITES
  * ===========================================================================
  * PRIORIDAD (el menor indice se dibuja ENCIMA):
- *   0-12  HUD      13  avion      14  explosion
- *   15    enemigo  16-17 balas     18 bidon
+ *   0-10  HUD      11  avion      12  explosion
+ *   13    enemigo  14-15 balas      16 bidon
  * Asi el HUD queda siempre visible y el avion pasa por delante del enemigo,
  * de las balas y del bidon.
  * NOTA: el HUD NO puede ir en el tilemap, porque la banda media de scroll
@@ -249,13 +251,13 @@ static uint8_t  scroll_step;
  * Rango disponible: 3..63. Las fases 2 y 4 escriben en pat_arr (fondo), no en
  * spr_arr, asi que los patrones de sprite 32..63 NO se tocan.
  * Ver doc/PATRONES-SPRITE-CAUSA.md. */
-#define SPR_PLANE      13    /* sprite unico del avion (escala 2x) */
+#define SPR_PLANE      11    /* sprite unico del avion (escala 2x) */
 #define SPR_PLANE_PAT  12
-#define SPR_BOAT       15
+#define SPR_BOAT       13
 #define SPR_BOAT_PAT   13
 #define SPR_HELI       15
 #define SPR_HELI_PAT   9
-#define SPR_BULLET     16    /* 16 y 17 (pool de 2 balas) */
+#define SPR_BULLET     14    /* 14 y 15 (pool de 2 balas) */
 #define SPR_BULLET_PAT 14
 /* Desfase entre el ORIGEN del sprite de la bala y su dibujo: el patron ocupa
  * las columnas 3 y 4, asi que el dibujo empieza en bullet_x + BULLET_OFF_X y
@@ -266,7 +268,7 @@ static uint8_t  scroll_step;
 #define BULLET_W       2
 #define BULLET_H       6
 #define BULLET_HIT_X(i) ((uint16_t)(bullet_x[i] + BULLET_OFF_X))
-#define SPR_BOOM       14
+#define SPR_BOOM       12
 /* OJO: los 3 patrones de la explosion tienen que caer en indices LIBRES.
  * Antes eran 10, 11 y 12, y el 12 es SPR_PLANE_PAT: el tercer frame del fuego
  * machacaba el dibujo del avion y en vuelo normal se veia un anillo blanco en
@@ -750,7 +752,7 @@ static void read_input(void) {
  * el patron de los digitos y de la barra cuando su valor cambia.
  */
 static uint8_t  hud_last_digit[4];
-static uint8_t  hud_last_slot_on[8];      /* estado de cada pieza de la barra */
+static uint8_t  hud_last_slot_on[HUD_FUEL_W];  /* estado de cada pieza de la barra */
 static uint8_t  hud_last_lives = 0xFF;
 
 /* Fija posicion y paleta de todos los sprites del HUD (una sola vez). */
