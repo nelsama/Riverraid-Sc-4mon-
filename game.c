@@ -139,24 +139,41 @@ static uint8_t  scroll_step;
 /* Y=10: la fila 1 del tilemap (pixeles 8..15). La fila 0 (0..7) la recorta
  * el overscan de muchos monitores (manual del core, 1.9 y 5): con Y=2 el HUD
  * quedaba medio fuera de pantalla. Aqui sobra 2 px de margen por arriba. */
-#define HUD_Y          10      /* Y de la fila de HUD (px). Ocupa 10..17 */
+/* Y=10: la fila 1 del tilemap (pixeles 8..15). La fila 0 (0..7) la recorta
+ * el overscan de muchos monitores (manual del core, 1.9 y 5). */
+#define HUD_Y          10      /* FILA 1 del HUD (puntos + icono vida) */
+#define HUD_Y2         19      /* FILA 2 del HUD (barra + numero vidas):
+                                * 10 + 9 deja 1 px de aire y cabe en la
+                                * fila 2 del tilemap (16..23)           */
 #define HUD_SCORE_X    24      /* puntos (4 digitos x 8 px)          */
 /* HUD_SCALE = 0: los sprites del HUD son de 8x8, NO de 16x16. Por eso cada
  * pieza de la barra ocupa 8 px y el paso HUD_FUEL_STEP es mayor que 8: deja
  * un hueco entre piezas en vez de solaparlas. */
-#define HUD_FUEL_X     120     /* barra de combustible               */
-#define HUD_FUEL_W     8       /* nº de celdas de la barra (8x8 px)  */
-#define HUD_FUEL_STEP  12      /* 8 px de pieza + 4 px de hueco      */
-/* VIDAS a la derecha de la barra: 120 + 7*12 + 8 = 212 es el borde derecho
- * de la barra, asi que 216 deja 4 px de separacion. Antes estaba en 208 y el
- * icono de vidas se pintaba ENCIMA de las dos ultimas celdas de la barra. */
-#define HUD_LIVES_X    216     /* icono de vida + numero de vidas    */
+#define HUD_FUEL_X     24      /* barra de combustible (FILA 2)      */
+#define HUD_FUEL_W     7       /* celdas de la barra: 7 + vidas = 8,
+                                * el maximo del line buffer del core  */
+/* Paso de 9 px: la pieza mide 7 y deja 1 px transparente (columna 7 del
+ * patron) + 1 px de hueco, asi la barra se lee como una barra continua. */
+#define HUD_FUEL_STEP  9       /* 7 px de relleno + 2 px de hueco     */
+/* VIDAS: el icono va en la FILA 1 (a la derecha de los puntos) y el NUMERO en
+ * la FILA 2 (a la derecha de la barra). Asi la fila 2 queda en 7+1 = 8
+ * sprites y la fila 1 en 4+1 = 5, ambas dentro del limite.
+ *
+ * OJO CON EL REPARTO: el core de video NO dibuja los 32 sprites uno sobre
+ * otro. Tiene un line buffer de 8 entradas (NSL = 8 en video_core.vhd): los
+ * primeros 8 sprites que cruzan una linea se guardan y el 9.o EN ADELANTE NO
+ * SE DIBUJA. El HUD tenia los 14 en Y=10, asi que en hardware real
+ * desaparecian las 4 ultimas barras y el bloque de vidas. Por eso va partido
+ * en dos filas. */
+#define HUD_LIVES_X    120     /* icono de vida   (Y = HUD_Y )       */
+#define HUD_LIVESNUM_X 120     /* numero de vidas (Y = HUD_Y2)       */
 
 /* Patrones de sprite del HUD. */
 #define HUD_PAT_DIGIT0 42       /* 10 digitos = 42..51                */
 #define HUD_PAT_LIVES  52       /* icono de vida (avion pequeno)      */
-#define HUD_PAT_BAR_ON 53       /* celda de barra llena               */
-#define HUD_PAT_BAR_OFF 54      /* celda de barra vacia               */
+#define HUD_PAT_LIVES2 53       /* icono de vida ALTERNATIVO (morado) */
+#define HUD_PAT_BAR_ON 54       /* celda de barra llena               */
+#define HUD_PAT_BAR_OFF 55      /* celda de barra vacia               */
 
 /* ===========================================================================
  * TILES
@@ -395,13 +412,21 @@ static uint8_t   fuel_refuel_tick;/* contador de frames de contacto       */
 
 /* Mapa del canal en RAM (perfil por fila):
  *   river_l/r   = bordes de agua de la fila
- *   island_l/r  = isla central que parte el cauce (0xFF = sin division) */
+ *   island_l/r  = isla central que parte el cauce (0xFF = sin division)
+ *
+ * OJO CON island_r: SE GUARDA el borde derecho REAL, no se deduce. La isla
+ * CRECE de 1 a GEN_ISLAND_W columnas dentro de cada bloque, asi que su ancho
+ * cambia fila a fila. Antes no existia este array y celda_agua suponia
+ * `il + GEN_ISLAND_W - 1`, o sea el ancho MAXIMO: en una fila donde la isla
+ * medía 5 columnas la colision creia que medía 9, y el avion moria contra 4
+ * columnas de agua que en pantalla se veian azules. ESE era el "choque con
+ * algo invisible" del lado derecho de la isla.
+ * Medido con tools/verificar_colision.py: 638 celdas discrepantes en 2000
+ * filas con el codigo viejo, 0 con este. */
 static uint8_t   river_l[VC_MAP_ROWS];
 static uint8_t   river_r[VC_MAP_ROWS];
 static uint8_t   island_l[VC_MAP_ROWS];
-/* NO existe island_r[]: el ancho de la isla nunca pasa de GEN_ISLAND_W, asi
- * que el borde derecho es siempre il + GEN_ISLAND_W - 1 (lo calcula
- * celda_agua). Guardar el array costaba 32 bytes de BSS que no cabian. */
+static uint8_t   island_r[VC_MAP_ROWS];
 
 /* PUENTE: 1 si la fila de cinta es la viga (mata salvo el hueco). Se lleva en
  * RAM porque gen_bridge solo vale para la fila que se esta generando. */
@@ -561,14 +586,24 @@ static const uint8_t hud_digit[10][8] = {
     { 0x3C,0x66,0x66,0x3E,0x06,0x66,0x3C,0x00 }  /* 9 */
 };
 
-/* Icono de vida: mini-avion. Paleta 1, indice 3 = blanco #FFFFFF. */
-static const uint8_t hud_lives_pat[8] = { 0x18,0x3C,0x7E,0xFF,0x18,0x18,0x18,0x00 };
+/* Icono de vida: el mismo AVION del juego visto de frente, con las alas en
+ * las dos primeras filas (la variante anterior tenia una flecha vertical que
+ * no se leia como un avion). Paleta 1, indice 3 = blanco #FFFFFF. */
+static const uint8_t hud_lives_pat[8] = { 0x18,0xFF,0x7E,0x3C,0x24,0x18,0x18,0x00 };
+/* Variante morada (indices 1 y 2 = azul y cian) para poder comparar las dos
+ * en el emulador antes de quedarse con una. */
+static const uint8_t hud_lives2_pat[8] = {
+    0x22,0x11,0x1B,0x0C,0x0C,0x0C,0x0C,0x00
+};
 
 /* Celdas de la barra de combustible (llena / vacia). Paleta 1:
- *   llena = todo indice 3 (blanco #FFFFFF)
- *   vacia = marco en indice 3 con el centro transparente (se ve el fondo) */
-static const uint8_t hud_bar_on[8]  = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
-static const uint8_t hud_bar_off[8] = { 0x81,0x81,0x81,0x81,0x81,0x81,0x81,0x81 };
+ *   llena = columnas 0-6 en indice 3 (blanco #FFFFFF); la columna 7 queda
+ *           transparente para dejar el pixel de separacion.
+ *   vacia = marco: solo la fila superior y la inferior, el centro se ve.
+ *           El trazo de arriba lleva la columna 7 a color 2 (cian) para
+ *           probar la paleta: si se ve blanco, esa fila se quita. */
+static const uint8_t hud_bar_on[8]  = { 0xFE,0xFE,0xFE,0xFE,0xFE,0xFE,0xFE,0xFE };
+static const uint8_t hud_bar_off[8] = { 0xFE,0x82,0x82,0x82,0x82,0x82,0x82,0xFE };
 
 /* --- NAVES (GENERADO por tools/gen_ships.py) --- */
 /* --- Sprites nuevos (export de Piskel, tools/piskel_a_sprite.py) ---
@@ -714,12 +749,12 @@ static void hud_setup(void) {
     for (i = 0; i < HUD_FUEL_W; i++)
         fv_sprite_move((uint8_t)(SPR_HUD_FUEL + i),
                        (uint16_t)(HUD_FUEL_X + i * HUD_FUEL_STEP),
-                       HUD_Y, VC_SPPAL_1 | HUD_SCALE);
-    for (i = 0; i < 8; i++) hud_last_slot_on[i] = 0;
+                       HUD_Y2, VC_SPPAL_1 | HUD_SCALE);
+    /* Icono en la FILA 1; el numero en la FILA 2 (ver la rejilla de HUD_LIVES_X). */
     fv_sprite_move((uint8_t)(SPR_HUD_LIVES), HUD_LIVES_X, HUD_Y,
                    VC_SPPAL_1 | HUD_SCALE);
     fv_sprite_move((uint8_t)(SPR_HUD_LIVES + 1),
-                   (uint16_t)(HUD_LIVES_X + 8), HUD_Y, VC_SPPAL_1 | HUD_SCALE);
+                   HUD_LIVESNUM_X, HUD_Y2, VC_SPPAL_1 | HUD_SCALE);
     hud_last_digit[0] = hud_last_digit[1] = hud_last_digit[2] = hud_last_digit[3] = 0xFF;
     hud_last_lives = 0xFF;
 }
@@ -743,19 +778,13 @@ static void hud_draw(void) {
         }
     }
 
-    /* Barra de combustible.
-     *
-     * Las celdas se pintan a escala 2 (16 px) con paso HUD_FUEL_STEP, asi que
-     * se solapan y una misma celda de la barra cae dentro de dos piezas. Por
-     * eso cada pieza se escribe con el patron de la celda que tiene CENTRADA
-     * (pieza x+8 en pantalla), y se reescribe cuando cambia el valor de esa
-     * celda o cuando el relleno cruza justo por su centro. Escribir siempre las
-     * 8 piezas costaba varios cientos de us por frame en el VBLANK y dar por
-     * sentado que la barra se actualizaba ocultaba bugs. */
+    /* Barra de combustible: X = HUD_FUEL_X + i * HUD_FUEL_STEP. Cada pieza
+     * ocupa 9 px (7 de relleno + 2 de hueco), asi que el CENTRO de la pieza i
+     * cae en +4 y consulta la celda (4 / 9) = 0: cada pieza es una celda. */
     {
         uint8_t filled = (uint8_t)(((uint16_t)fuel * HUD_FUEL_W) / FUEL_MAX);
         for (i = 0; i < HUD_FUEL_W; i++) {
-            uint16_t center = (uint16_t)(HUD_FUEL_X + i * HUD_FUEL_STEP + 8);
+            uint16_t center = (uint16_t)(HUD_FUEL_X + i * HUD_FUEL_STEP + 4);
             uint8_t cell = (uint8_t)((center - HUD_FUEL_X) / HUD_FUEL_STEP);
             uint8_t on   = (uint8_t)(cell < filled);
 
@@ -769,11 +798,10 @@ static void hud_draw(void) {
 
     /* Icono de vida + numero de vidas. */
     if (lives != hud_last_lives) {
-        if (hud_last_lives == 0xFF)
-            fv_oam(SPR_HUD_LIVES, VC_OAM_TILE, HUD_PAT_LIVES);
+        hud_last_lives = lives;
+        fv_oam(SPR_HUD_LIVES, VC_OAM_TILE, HUD_PAT_LIVES);
         fv_oam((uint8_t)(SPR_HUD_LIVES + 1), VC_OAM_TILE,
                    (uint8_t)(HUD_PAT_DIGIT0 + (lives % 10)));
-        hud_last_lives = lives;
     }
 }
 
@@ -1391,6 +1419,8 @@ static uint8_t generate_world_row(uint32_t n) {
     river_l[cinta_row]  = gen_left;
     river_r[cinta_row]  = gen_right;
     island_l[cinta_row] = il;
+    /* Borde derecho REAL de esta fila (ver island_r). */
+    island_r[cinta_row] = ir;
     /* El borde derecho de la isla se reconstruye en celda_agua(): siempre mide
      * GEN_ISLAND_W pegada a il (ver el comentario de island_l). Se guarda
      * `ir` en la variable local solo para pintar la fila. */
@@ -1515,6 +1545,7 @@ static void load_patterns(void) {
         for (d = 0; d < 10; d++)
             fv_load_spr_pattern((uint8_t)(HUD_PAT_DIGIT0 + d), hud_digit[d], hud_digit[d]);
         fv_load_spr_pattern(HUD_PAT_LIVES, hud_lives_pat, hud_lives_pat);
+        fv_load_spr_pattern(HUD_PAT_LIVES2, hud_lives2_pat, hud_lives2_pat);
         fv_load_spr_pattern(HUD_PAT_BAR_ON, hud_bar_on, hud_bar_on);
         fv_load_spr_pattern(HUD_PAT_BAR_OFF, hud_bar_off, hud_bar_off);
     }
@@ -1956,7 +1987,7 @@ static uint8_t celda_agua(uint8_t cinta_row, uint8_t c) {
     uint8_t l  = river_l[cinta_row];
     uint8_t r  = river_r[cinta_row];
     uint8_t il = island_l[cinta_row];
-    uint8_t ir = (uint8_t)(il + GEN_ISLAND_W - 1);   /* ver island_l[] */
+    uint8_t ir = island_r[cinta_row];   /* borde REAL, no il + GEN_ISLAND_W - 1 */
 
     /* Los bordes son tiles de ARENA, no agua: el agua va de l+1 a r-1. */
     if (c <= l || c >= r) return 0;
@@ -2698,70 +2729,21 @@ static void reset_game(void) {
 }
 
 /* ===========================================================================
- * PANTALLA DE GAME OVER
+ * GAME OVER
  * ===========================================================================
- * Muestra el mensaje y espera FIRE/R para reiniciar o Q para salir.
+ * Ya NO hay panel con texto. Se quito para liberar ~500 bytes de codigo y de
+ * RODATA que hacian falta para guardar island_r[] (32 bytes), el arreglo del
+ * "choque con algo invisible" (ver el comentario de island_l/island_r).
  *
- * El panel se pinta UNA VEZ: el mundo se congela mientras dure y no se vuelve
- * a tocar el tilemap. Repintarlo cada frame hacia que la captura lo pillara a
- * medio escribir (parpadeo y renglones que faltaban).
- *
- * El panel ocupa 6 filas de cinta, en la paleta del MENU (PAL_MENU):
- *   fondo  = TILE_PANEL opaco (indice 1 = negro)
- *   texto  = fuente (indice 3 = blanco)
+ * Ahora el mundo se queda congelado con los sprites apagados y se espera a
+ * FIRE/R para reiniciar o Q para salir. Es la misma mecanica que la pantalla
+ * anterior, sin el cartel: la consola del monitor sigue mostrando el estado.
  * =========================================================================== */
-#define MENU_ROW0   11     /* primera fila del panel EN PANTALLA (celdas) */
-#define MENU_ROWS    6     /* alto del panel en filas de cinta            */
-#define MENU_COL0    2     /* primera columna del panel                   */
-#define MENU_COL1   37     /* ultima columna del panel                    */
-
 static void game_over_screen(void) {
-    static uint8_t panel_drawn;
     uint8_t j = joy_read();
     char c;
-    uint8_t ly;
-
-    if (!panel_drawn) {
-        uint8_t r, k;
-        panel_drawn = 1;
-
-
-        /* Pinta el panel en las filas de cinta que estan en pantalla AHORA y
-         * congela el scroll: a partir de aqui nada mueve el mundo. */
-        for (r = 0; r < MENU_ROWS; r++) {
-            uint8_t row = (uint8_t)(((scroll_val >> 3) + MENU_ROW0 + r) & (VC_MAP_ROWS - 1));
-            uint16_t cell = (uint16_t)((uint16_t)row << 6);
-            for (k = MENU_COL0; k <= MENU_COL1; k++) {
-                uint16_t addr = (uint16_t)(cell + k);
-                VID_ADDR_LO = (uint8_t)addr;
-                VID_ADDR_HI = (uint8_t)((addr >> 8) & 0x07);
-                VID_DATA    = TILE_PANEL;
-                VID_ADDR_LO = (uint8_t)addr;
-                VID_ADDR_HI = (uint8_t)(VC_AREA_ATTR | ((addr >> 8) & 0x07));
-                VID_DATA    = PAL_MENU;
-            }
-        }
-
-        /* Texto: tres renglones, en las filas 1, 3 y 4 del panel. */
-        for (ly = 0; ly < 3; ly++) {
-            static const char *const lineas[3] = {
-                "GAME OVER", "FIRE/R = reintentar", "Q = salir"
-            };
-            uint8_t fila = (uint8_t)(((scroll_val >> 3) + MENU_ROW0 +
-                                      (ly == 2 ? 4 : (uint8_t)(ly + 1))) & (VC_MAP_ROWS - 1));
-            const char *t = lineas[ly];
-            uint8_t col = (uint8_t)((ly == 0) ? 14 : (ly == 1 ? 12 : 15));
-            while (*t) {
-                fv_put_cell(col, fila, (uint8_t)*t);
-                fv_put_attr(col, fila, PAL_MENU);
-                col++;
-                t++;
-            }
-        }
-    }
 
     if (j & JOY_A_FIRE) {
-        panel_drawn = 0;
         reset_game();
         return;
     }
@@ -2769,13 +2751,12 @@ static void game_over_screen(void) {
     while (rom_uart_rx_ready()) {
         c = rom_uart_getc();
         if (c == 'r' || c == 'R' || c == ' ') {
-            panel_drawn = 0;
             reset_game();
-            break;
+            return;
         }
         if (c == 'q' || c == 'Q') {
             quit_flag = 1;
-            break;
+            return;
         }
     }
 }
