@@ -295,7 +295,7 @@ static uint8_t  scroll_step;
 #define BULLET_INSET   1
 #define BULLET_W       4
 #define BULLET_H       6
-#define BULLET_HIT_X(i) ((uint16_t)(bullet_x[i] + BULLET_OFF_X - BULLET_INSET))
+#define BULLET_HIT_X(i) ((uint8_t)(bullet_x[i] + BULLET_OFF_X - BULLET_INSET))
 #define SPR_BOOM       12
 /* OJO: los 3 patrones de la explosion tienen que caer en indices LIBRES.
  * Antes eran 10, 11 y 12, y el 12 es SPR_PLANE_PAT: el tercer frame del fuego
@@ -431,7 +431,7 @@ static uint8_t  boom_frames;
 
 /* Balas del jugador. */
 static uint8_t   bullet_alive[NBULLETS];
-static uint16_t  bullet_x[NBULLETS];
+static uint8_t   bullet_x[NBULLETS];  /* 8 bits: nunca pasa de 240 */
 static uint8_t   bullet_y[NBULLETS];
 static uint8_t   fire_cooldown;
 
@@ -2020,7 +2020,7 @@ static uint8_t fire_bullet(void) {
      * Para que los dos centros coincidan: bullet_x = plane_x + 6,5 - 3,5, es
      * decir plane_x + 3. Con el "- 1" de antes la bala salia 3 px a la derecha
      * del morro, que es el desvio que se ve en pantalla. */
-    bullet_x[i] = (uint16_t)(plane_x + 3);
+    bullet_x[i] = (uint8_t)(plane_x + 3);
     bullet_y[i] = (uint8_t)(plane_y - 2);                   /* justo delante        */
     bullet_alive[i] = 1;
     fire_cooldown = FIRE_COOLDOWN;
@@ -2495,16 +2495,37 @@ static void check_plane_collisions(void) {
  * es que NUNCA pueden estar a la misma altura (ENEMIGO_SEP_Y).
  * =========================================================================== */
 
-/* Devuelve 1 si el enemigo `i` puede nacer en y=0 sin quedar a la altura del
- * otro. El que ya esta en pantalla siempre va por debajo (entro antes), asi
- * que basta con exigir separacion respecto a su fila actual. */
+/* Devuelve 1 si el que nace en la fila `y` no queda a la MISMA ALTURA que otro
+ * objeto del rio.
+ *
+ * Se aplica a los tres: barco, helicoptero y BIDON (el bidon antes no lo
+ * comprobaba y podia nacer encima de un barco, con lo que se confundian).
+ * `i` = indice del enemigo que nace, o NENEMIGOS si es el bidon; ese es
+ * justamente el que se salta la comprobacion consigo mismo. */
+
+/* 1 si las dos filas estan a menos de ENEMIGO_SEP_Y px. */
+static uint8_t cerca(uint8_t a, uint8_t b) {
+    return (uint8_t)(((a >= b) ? (uint8_t)(a - b) : (uint8_t)(b - a)) < ENEMIGO_SEP_Y);
+}
+
 static uint8_t enemigo_libre(uint8_t i, uint8_t y) {
     uint8_t k;
-    for (k = 0; k < NENEMIGOS; k++) {
-        uint8_t dy;
-        if (k == i || !ene_active[k]) continue;
-        dy = (uint8_t)((ene_y[k] >= y) ? (ene_y[k] - y) : (y - ene_y[k]));
-        if (dy < ENEMIGO_SEP_Y) return 0;
+
+    /* k llega hasta NENEMIGOS: esa ultima "posicion" es el BIDON, para que
+     * tambien respete la altura (antes podia nacer encima de un barco y se
+     * confundian). i == NENEMIGOS significa que el que nace es el bidon. */
+    for (k = 0; k <= NENEMIGOS; k++) {
+        uint8_t oy;
+
+        if (k == i) continue;
+        if (k == NENEMIGOS) {
+            if (!fuel_active) continue;
+            oy = fuel_y;
+        } else {
+            if (!ene_active[k]) continue;
+            oy = ene_y[k];
+        }
+        if (cerca(oy, y)) return 0;
     }
     return 1;
 }
@@ -2641,8 +2662,14 @@ static void update_fuel(void) {
     fuel_refuel_tick = 0;
 
     if (world_row >= fuel_next) {
-        /* Aparece en AGUA navegable de la fila por la que entra. */
-        uint8_t x = columna_libre();
+        uint8_t x;
+
+        /* Aparece en AGUA navegable de la fila por la que entra, y NUNCA a la
+         * altura de un enemigo. Si coincide, se espera un poco: antes el bidon
+         * podia nacer encima de un barco y se confundian. */
+        if (!enemigo_libre(NENEMIGOS, 0)) { fuel_next = world_row + 2; return; }
+
+        x = columna_libre();
         if (x == 0xFF) { fuel_next = world_row + 4; return; }
         fuel_x = x;
         fuel_y = 0;
