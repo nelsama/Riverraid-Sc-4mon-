@@ -2127,32 +2127,57 @@ static uint8_t celda_en_tierra(uint8_t cinta_row, uint8_t c) {
  * o sea mas barato que repintar celdas. */
 #define PUENTE_FLASH_FRAMES  14   /* ~0,23 s a 60 Hz: se ve el fogonazo */
 
-/* El destello se escribe DIRECTO al puerto ($D813-$D815) en vez de llamar a
- * vid_pal_set_bg() seis veces: esa funcion es normal (no inline) y cada llamada
- * cuesta prólogo, calculo de entrada y salto. Aqui se fija el puntero UNA vez y
- * se dejan caer los 3 colores seguidos, que el core auto-incrementa. */
-#define PAL_AGUA_BASE  VC_PAL_BG(PAL_WATER, 1)   /* = paleta*4 + color 1 */
-
-/* Colores RGB444 como LITERALES (no con VC_RGB444, que es macro y genera
- * aritmetica en cada uso). Formato 0xRGB. */
+/* Se usa vid_pal_set_bg(), que fija el puntero de entrada en CADA escritura.
+ *
+ * La version anterior fijaba VID_PAL_PTR una sola vez y contaba con el
+ * auto-incremento del core, pero el incremento lo dispara VID_PAL_HI y el primer
+ * VID_PAL_LO de cada color se colaba en la entrada anterior: los tres colores
+ * acababan machacandose y el agua se quedaba en el color de OTRA paleta (verde,
+ * que es PAL_ISLAND).
+ *
+ * rgb444 en hexadecimal 0xRGB. */
 static void puente_flash_on(void) {
-    VID_PAL_PTR = PAL_AGUA_BASE;
-    VID_PAL_LO  = 0x6F;  VID_PAL_HI = 0x02;   /* 1: azul medio   #0026 FF */
-    VID_PAL_LO  = 0x9F;  VID_PAL_HI = 0x04;   /* 2: oleaje claro        */
-    VID_PAL_LO  = 0xDF;  VID_PAL_HI = 0x08;   /* 3: azul casi blanco    */
+    vid_pal_set_bg(PAL_WATER, 1, 0x26F);   /* azul medio       */
+    vid_pal_set_bg(PAL_WATER, 2, 0x49F);   /* oleaje claro     */
+    vid_pal_set_bg(PAL_WATER, 3, 0x8DF);   /* azul casi blanco */
 }
 
 static void puente_flash_off(void) {
-    VID_PAL_PTR = PAL_AGUA_BASE;
-    VID_PAL_LO  = 0xA2;  VID_PAL_HI = 0x00;   /* 1: #0022AA (original)  */
-    VID_PAL_LO  = 0xE4;  VID_PAL_HI = 0x01;   /* 2: #1144EE (oleaje)    */
-    VID_PAL_LO  = 0xF6;  VID_PAL_HI = 0x02;   /* 3: #2266FF (claro)     */
+    vid_pal_set_bg(PAL_WATER, 1, 0x02A);   /* #0022AA (original) */
+    vid_pal_set_bg(PAL_WATER, 2, 0x14E);   /* #1144EE (oleaje)   */
+    vid_pal_set_bg(PAL_WATER, 3, 0x26F);   /* #2266FF (claro)    */
 }
 
 static void update_puente_flash(void) {
+    /* Espejo del contador en $03E1: permite MEDIR el destello desde el emulador
+     * (el color del agua no se puede leer directo y /screen.png va con retraso). */
+    *(volatile uint8_t *)0x03E1 = puente_flash;
     if (!puente_flash) return;
     if (--puente_flash) return;
     puente_flash_off();
+}
+
+/* Borra la VIGA de una fila de cinta y deja AGUA de verdad.
+ *
+ * OJO: hay que escribir TILE **y ATRIBUTO**. fv_cell() solo escribe el tile, y
+ * la viga se pinto con PAL_WOOD: si se deja el atributo, el agua sale MARRON y
+ * el puente parece seguir intacto aunque ya no mate. Ese era el bug del
+ * "disparo al puente y queda tal cual".
+ *
+ * Devuelve 1 si esa fila era de puente. */
+static uint8_t puente_borrar_fila(uint8_t cr) {
+    uint8_t col;
+    uint16_t cell = (uint16_t)((uint16_t)cr << 6);
+    uint8_t tile  = (uint8_t)((cr & 1) ? TILE_WATER2 : TILE_WATER);
+
+    if (!puente_bit[cr]) return 0;
+    puente_bit[cr] = 0;
+
+    for (col = (uint8_t)(river_l[cr] + 1); col < river_r[cr]; col++) {
+        fv_cell((uint16_t)(cell + col), tile);
+        fv_attr_cell((uint16_t)(cell + col), PAL_WATER);
+    }
+    return 1;
 }
 
 /* Destruye el PUENTE que hay debajo del avion.
@@ -2161,49 +2186,47 @@ static void update_puente_flash(void) {
  * haberlo volado, se destruyen los dos. Tiene que ir ANTES de plane_hit(),
  * porque esa funcion restaura el checkpoint y volveria a poner el puente.
  *
- * Se borra la viga de las TRES filas de cinta que ocupa el sprite, repintando
- * esas celdas como agua: si solo se apagara puente_bit[], la colision dejaria
- * de matar pero la madera seguiria dibujada. */
+ * OJO: esta funcion se llama en TODO choque contra orilla o isla, no solo
+ * contra el puente. El destello solo se enciende si de verdad habia viga
+ * debajo; si no, el agua parpadeaba al morir contra el cesped y parecia un
+ * "puente invisible". */
 static void puente_destruir_bajo_avion(void) {
     uint8_t k;
+    uint8_t habia = 0;
 
     for (k = 0; k < PLANE_H; k++) {
-        uint8_t cr = FILA_CINTA((uint8_t)(plane_y + k));
-        uint8_t col;
-
-        if (!puente_bit[cr]) continue;
-        puente_bit[cr] = 0;
-
-        for (col = (uint8_t)(river_l[cr] + 1); col < river_r[cr]; col++) {
-            fv_cell((uint16_t)(((uint16_t)cr << 6) + col),
-                    (uint8_t)((cr & 1) ? TILE_WATER2 : TILE_WATER));
-        }
+        habia |= puente_borrar_fila(FILA_CINTA((uint8_t)(plane_y + k)));
     }
+    if (!habia) return;
+
     puente_flash = PUENTE_FLASH_FRAMES;
     puente_flash_on();
 }
 
-/* PUENTE <-> BALA: un disparo se lleva la fila ENTERA de orilla a orilla.
+/* PUENTE <-> BALA: un disparo se lleva el puente ENTERO, de orilla a orilla
+ * y de la primera fila de viga a la ultima.
  *
  * Es el comportamiento del original: el puente no se esquiva ni se marca a
- * trozos, se revienta de un tiro. Devuelve 1 si la bala i ha dado al puente.
- * El repintado va AQUI y no en una funcion aparte: en cc65 sacarlo a funcion
- * propia costaba ~150 bytes mas de los que no hay (prólogo, epílogo y
- * llamada), y esto entra una sola vez por disparo. */
+ * trozos, se revienta de un tiro. Devuelve 1 si la bala i ha dado al puente. */
 static uint8_t puente_toca_bala(uint8_t i) {
     uint8_t cr = FILA_CINTA(bullet_y[i]);
     uint8_t c  = (uint8_t)(BULLET_HIT_X(i) >> 3);
-    uint8_t col;
+    uint8_t k;
 
     if (!puente_bit[cr]) return 0;
     /* Solo si la bala cae sobre el cauce (la calle de los lados es terreno). */
     if (c <= river_l[cr] || c >= river_r[cr]) return 0;
 
-    puente_bit[cr] = 0;
-    for (col = (uint8_t)(river_l[cr] + 1); col < river_r[cr]; col++) {
-        fv_cell((uint16_t)(((uint16_t)cr << 6) + col),
-                (uint8_t)((cr & 1) ? TILE_WATER2 : TILE_WATER));
+    /* La viga son BRIDGE_ROWS filas CONTIGUAS. Se recorren las que van de
+     * cr-(BRIDGE_ROWS-1) a cr+(BRIDGE_ROWS-1) para cubrirla entre por donde
+     * entre la bala, y puente_borrar_fila() ignora las que no son puente. */
+    {
+        uint8_t f0 = (uint8_t)((cr - (BRIDGE_ROWS - 1)) & (VC_MAP_ROWS - 1));
+        for (k = 0; k < (2 * BRIDGE_ROWS - 1); k++) {
+            puente_borrar_fila((uint8_t)((f0 + k) & (VC_MAP_ROWS - 1)));
+        }
     }
+
     puente_flash = PUENTE_FLASH_FRAMES;
     puente_flash_on();
     return 1;
