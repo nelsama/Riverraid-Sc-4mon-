@@ -1002,16 +1002,17 @@ static void hud_draw(void) {
 #define PROG_HELI    1   /* ... del helicoptero (0 = no aparece)            */
 #define PROG_BIDON   2   /* filas de mundo entre bidones                    */
 #define PROG_ANCHO   3   /* ancho minimo del cauce                          */
-#define PROG_COLS    4
+#define PROG_BRAZO   4   /* ancho minimo de cada brazo junto a la isla      */
+#define PROG_COLS    5
 
 static const uint8_t prog_tab[NIVEL_MAX + 1][PROG_COLS] = {
-    /* barco  heli  bidon  ancho */
-    {     0,     0,    18,    20 },   /* nivel 0: puente 1 */
-    {     0,     4,    20,    19 },   /* nivel 1: puente 2 */
-    {     4,     0,    22,    18 },   /* nivel 2: puente 3 */
-    {     3,     3,    26,    17 },   /* nivel 3: puente 4 */
-    {     2,     2,    30,    16 },   /* nivel 4: puente 5 */
-    {     1,     1,    34,    15 }    /* nivel 5: puente 6+ */
+    /* barco  heli  bidon  ancho  brazo */
+    {     0,     0,    18,    20,     8 },   /* nivel 0: puente 1 */
+    {     0,     4,    20,    19,     8 },   /* nivel 1: puente 2 */
+    {     4,     0,    22,    18,     7 },   /* nivel 2: puente 3 */
+    {     3,     3,    26,    17,     7 },   /* nivel 3: puente 4 */
+    {     2,     2,    30,    16,     6 },   /* nivel 4: puente 5 */
+    {     1,     1,    34,    15,     6 }    /* nivel 5: puente 6+ */
 };
 
 /* Nivel actual, derivado del tramo (gen_sector empieza en 1).
@@ -1019,16 +1020,8 @@ static const uint8_t prog_tab[NIVEL_MAX + 1][PROG_COLS] = {
 static uint8_t nivel_actual(void);
 static uint8_t nivel_val(uint8_t col);
 
-/* PROGRESION: cada puente (sector) estrecha el rio. Con GEN_SECTOR bloques por
- * tramo y 4 tramos, es decir 4 puentes, el ancho llega al minimo duro:
- *
- *   tramo 1: brazos de 7 y cauce de 7..20   (facil)
- *   tramo 2: brazos de 6
- *   tramo 3: brazos de 5, cauce desde 6
- *   tramo 4: brazos de 5, cauce desde 5     (dificil)  ← se queda aqui
- *
- * GEN_RAMP_SECTORS = 3 significa "3 puentes para pasar de facil a dificil". */
-#define GEN_RAMP_SECTORS 3
+/* (GEN_RAMP_SECTORS y su comentario se eliminaron: la progresion del ancho ya
+ * no se calcula por tramos, sale de prog_tab[].) */
 
 /* PUENTE: coordenadas FIJAS (documento de puentes, X1=34 X2=66 sobre 100).
  * Sobre 100 de ancho de pantalla -> 13,6..26,4; en nuestras 40 columnas
@@ -1154,16 +1147,12 @@ static uint8_t gen_w_min_now(void) {
     return nivel_val(PROG_ANCHO);
 }
 
-/* Ancho minimo de cada brazo junto a la isla.
+/* Ancho minimo de cada brazo junto a la isla (columna PROG_BRAZO).
  *
- * No tiene columna propia en la tabla: se deriva del ancho del cauce, que ya
- * marca la dificultad. El brazo baja de GEN_ARM_EASY a GEN_ARM_MIN a medida que
- * el nivel sube, repartiendo el mismo recorrido entre NIVEL_MAX pasos. */
+ * Baja de GEN_ARM_EASY a GEN_ARM_MIN: un cauce estrecho tambien tiene que dejar
+ * menos agua a cada lado de la isla. */
 static uint8_t gen_arm_now(void) {
-    uint8_t lvl = nivel_actual();
-    uint16_t span = (uint16_t)(GEN_ARM_EASY - GEN_ARM_MIN);
-    uint8_t baja = (uint8_t)((span * lvl) / NIVEL_MAX);
-    return (uint8_t)(GEN_ARM_EASY - baja);
+    return nivel_val(PROG_BRAZO);
 }
 
 /* Precalcula el bloque: avanza el LFSR y fija el ANCHO, la CURVA y la ISLA
@@ -2779,10 +2768,19 @@ static void update_enemy(uint8_t i) {
         if (!sprite_cabe(ene_x[i], ene_y[i]) &&
             !reubicar_al_agua(&ene_x[i], ene_y[i])) { ene_active[i] = 0; return; }
 
-        /* Deriva lateral con rebote: 1 px cada pocos frames. El HELICOPTERO
-         * tambien queda sujeto al cauce; en el arcade vuela sobre el agua. */
-        if (++ene_drift[i] >= (i == ENEMIGO_HELI ? 2 : 4)) {
+        /* Deriva lateral con rebote: 1 px cada N frames, con N segun el nivel
+         * (prog_tab). N = 0 -> el enemigo NO se mueve de lado: sigue bajando
+         * con el scroll, asi que se le puede disparar y chocar, pero no se
+         * cruza. Asi empiezan los dos primeros tramos.
+         *
+         * OJO con el 0: `++ene_drift >= 0` SIEMPRE es cierto, asi que sin el
+         * `if` el enemigo derivaria a 1 px por frame con cadencia 0. */
+        {
+            uint8_t cada = nivel_val(i == ENEMIGO_HELI ? PROG_HELI : PROG_BARCO);
             uint8_t nx;
+
+            if (!cada) return;
+            if (++ene_drift[i] < cada) return;
             ene_drift[i] = 0;
             nx = (uint8_t)((ene_dir[i] == 0) ? ene_x[i] + 1 : ene_x[i] - 1);
 
@@ -2795,6 +2793,12 @@ static void update_enemy(uint8_t i) {
         }
         return;
     }
+
+    /* El HELICOPTERO no existe en los niveles donde prog_tab dice 0: los dos
+     * primeros tramos son solo de barcos. Se sale ANTES de tocar ene_next, para
+     * que no se acumule un "nacimiento pendiente" que aparezca de golpe en
+     * cuanto se suba de nivel. */
+    if (i == ENEMIGO_HELI && !nivel_val(PROG_HELI)) return;
 
     if (world_row < ene_next[i]) return;
 
@@ -2860,7 +2864,10 @@ static void update_fuel(void) {
         fuel_x = x;
         fuel_y = 0;
         fuel_active = 1;
-        fuel_next = world_row + 30;
+        /* Cada cuanto aparece el siguiente bidon: sale de prog_tab[]. Al
+         * principio caen a menudo y segun sube la dificultad se espacian (18
+         * filas en el primer tramo, 34 en el ultimo). */
+        fuel_next = world_row + nivel_val(PROG_BIDON);
     }
 }
 
