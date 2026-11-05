@@ -542,14 +542,6 @@ static const uint8_t tile_grass_p1[8] = { 0x00,0x10,0x00,0x00,0x08,0x00,0x00,0x0
 #define E(w, a) ((w) | ((a) << 1))   /* fila 0 = agua | fila 1 = arena */
 
 /* --- GENERADO por tools/gen_tiles.py --- */
-static const uint8_t tile_island_tl_p0[8] = { 0xFF, 0xFF, 0xF1, 0xE0, 0xC0, 0xC0, 0xC0, 0xE0 };
-static const uint8_t tile_island_tl_p1[8] = { 0xF0, 0xC0, 0x8E, 0x9F, 0x3F, 0x3F, 0x3F, 0x1F };
-static const uint8_t tile_island_tr_p0[8] = { 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x7F, 0x7F, 0xFF };
-static const uint8_t tile_island_tr_p1[8] = { 0xFF, 0x3F, 0x1F, 0x1F, 0x8F, 0x8F, 0x8F, 0x0F };
-static const uint8_t tile_island_bl_p0[8] = { 0xF1, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-static const uint8_t tile_island_bl_p1[8] = { 0x8E, 0x80, 0xC0, 0xF0, 0xFF, 0xFF, 0xFF, 0xFF };
-static const uint8_t tile_island_br_p0[8] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-static const uint8_t tile_island_br_p1[8] = { 0x1F, 0x1F, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 /* MEDIDO en el emulador (no fiarse del byte):
  *   0x17 con p0=0x0F,p1=0xF0 se ve   aaaagggg  = arena IZQ / cesped DER
  *   0x19 con p0=0xF0,p1=0x0F se ve   ggggaaaa  = cesped IZQ / arena DER
@@ -566,8 +558,6 @@ static const uint8_t tile_edge_r0_p1[8] = { 0xF0, 0xF0, 0xF0, 0xF0, 0xE0, 0xE0, 
 /* Arbol/vegetacion para el interior del islote. La forma debe seguir el
  * cuadrante que sustituye (arriba-derecha), para no romper el circulo:
  *   3 = agua, 1 = arena, 2 = vegetacion */
-static const uint8_t tile_tree_p0[8] = { 0xFF,0xFF,0x3B,0x0B,0x05,0x0D,0x03,0x03 };
-static const uint8_t tile_tree_p1[8] = { 0x1F,0x07,0xC3,0xF1,0xF9,0xF8,0xFC,0xFC };
 
 /* INDICE DEL PIXEL DE FONDO: color = (p0 << 1) | p1, o sea PLAN0 lleva el bit
  * ALTO. Con PLAN1 = 0 el indice es 0 o 2; con PLAN1 = 1 es 1 o 3.
@@ -1653,17 +1643,16 @@ static void load_patterns(void) {
     fv_load_bg_pattern(TILE_GRASS,  tile_grass_p0,  tile_grass_p1);
     fv_load_bg_pattern(TILE_WATER,  tile_water_p0,  tile_water_p1);
     fv_load_bg_pattern(TILE_WATER2, tile_water2_p0, tile_water2_p1);
-    fv_load_bg_pattern(TILE_ISLAND,    tile_island_tl_p0, tile_island_tl_p1);
-    fv_load_bg_pattern(TILE_ISLAND_R,  tile_island_tr_p0, tile_island_tr_p1);
-    fv_load_bg_pattern(TILE_ISLAND_L2, tile_island_bl_p0, tile_island_bl_p1);
-    fv_load_bg_pattern(TILE_ISLAND_R2, tile_island_br_p0, tile_island_br_p1);
+    /* TILE_ISLAND / _R / _L2 / _R2 no se cargan: el generador nunca asigna esos
+     * tiles (la isla se pinta con TILE_GRASS y las dos costas). Cargarlos
+     * costaba 64 bytes de RODATA que hacen falta para el stack. */
 
     /* Transicion tierra->agua: arena y agua. */
     fv_load_bg_pattern(TILE_COAST, tile_edge_l0_p0, tile_edge_l0_p1);
     fv_load_bg_pattern(TILE_COAST_M, tile_edge_r0_p0, tile_edge_r0_p1);
 
     fv_load_bg_pattern(TILE_BRIDGE,  tile_bridge_p0,  tile_bridge_p1);
-    fv_load_bg_pattern(TILE_TREE,    tile_tree_p0,    tile_tree_p1);
+    /* TILE_TREE no se carga: nunca se pinta. */
     fv_load_bg_pattern(TILE_ROAD,    tile_bridge_p1,  tile_road_p1);
 
     fv_load_spr_pattern(SPR_PLANE_PAT, spr_plane_p0, spr_plane_p1);

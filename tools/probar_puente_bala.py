@@ -1,20 +1,24 @@
-"""Prueba: un DISPARO destruye el puente entero de orilla a orilla.
+"""Prueba: UN SOLO disparo destruye el puente ENTERO (todas las filas de viga).
 
-Antes de disparar apunta el avion al puente y comprueba:
-  1. que hay viga (tile 29) en pantalla,
-  2. que al disparar sobre ella la viga DESAPARECE,
-  3. que el agua vuelve a su color original (el destello se apaga solo).
+Antes del cambio cada tiro se llevaba solo la fila que tocaba, asi que hacian
+falta ~3 tiros. Ahora el barrido recorre las filas de viga alrededor de la
+tocada y se las lleva todas.
+
+Los mandos van por el UART (puerto 4000), que es la via fiable: `mandos.py`
+depende de que exista la ventana del emulador y tenga el foco.
 
 Uso:
     python tools/probar_puente_bala.py
 """
 import json
-import sys
+import re
+import socket
 import time
 import urllib.request
 
 BASE = "http://127.0.0.1:8080"
-TILE_BRIDGE, TILE_ROAD = 29, 30
+UART = ("127.0.0.1", 4000)
+TILE_BRIDGE = 29
 
 
 def get(p):
@@ -28,53 +32,69 @@ def post(p, data):
         return r.read()
 
 
-def viga_filas():
+def vigas():
     tm = json.loads(get("/vram.json"))["tilemap"]
     return [r for r in range(32) if TILE_BRIDGE in tm[r]]
 
 
-def main():
-    sys.path.insert(0, "tools")
-    import mandos
+def vidas():
+    v = json.loads(get("/vram.json"))
+    for s in v["sprites"]:
+        if s["n"] == 10:
+            return s["tile"] - 42
+    return None
 
+
+def scroll():
+    t = get("/state.txt").decode("utf-8", "replace")
+    return int(re.search(r"scroll: x=0 y=(\d+)", t).group(1))
+
+
+def main():
     with open("output/game.bin", "rb") as f:
         post("/run?name=GAME.BIN&addr=0800", f.read())
-    time.sleep(1.4)
-    mandos.pulsa("space", 150)          # arrancar la partida
+    time.sleep(1.2)
 
-    # Esperar a que aparezca la viga del puente inicial.
+    u = socket.create_connection(UART, timeout=5)
+
+    # Las vidas se leen ANTES de arrancar (rio parado, HUD estable).
+    print("vidas: %s" % vidas())
+
+    u.sendall(b" ")                      # FIRE: arrancar
+
+    # Esperar a que el rio ANDE de verdad (el FIRE puede tardar un frame).
     t0 = time.time()
-    while time.time() - t0 < 8:
-        if viga_filas():
+    s0 = scroll()
+    while time.time() - t0 < 5:
+        time.sleep(0.15)
+        if scroll() != s0:
             break
+    print("rio en marcha")
+
+    # Y esperar a que haya viga en pantalla.
+    t0 = time.time()
+    while time.time() - t0 < 8 and not vigas():
         time.sleep(0.05)
 
-    antes = viga_filas()
-    print("filas con viga ANTES: %s" % antes)
+    antes = vigas()
+    print("filas con viga ANTES : %s" % antes)
     if not antes:
-        print("FALLO: no hay puente en pantalla al arrancar")
+        print("FALLO: no hay puente en pantalla")
+        u.close()
         return 1
 
-    # Disparar varias veces hacia arriba (el avion esta debajo del puente).
-    for _ in range(14):
-        mandos.pulsa("space", 90)
-        time.sleep(0.12)
+    u.sendall(b" ")                      # UN SOLO disparo
+    time.sleep(0.7)
 
-    despues = viga_filas()
+    despues = vigas()
     print("filas con viga DESPUES: %s" % despues)
+    u.close()
 
-    # El destello del agua debe volver a su color: se comprueba que el HUD
-    # sigue intacto y que la paleta ya no esta "clareada" (no hay forma directa
-    # de leer la paleta, asi que se espera un poco y se da por bueno si el
-    # juego sigue vivo).
-    time.sleep(0.6)
-    print("juego sigue en marcha")
-
-    if len(despues) < len(antes):
-        print("OK: el disparo destruyo la viga (%d filas menos)" %
-              (len(antes) - len(despues)))
+    if not despues:
+        print("OK: un solo tiro se llevo el puente ENTERO (%d filas)" %
+              len(antes))
         return 0
-    print("FALLO: la viga sigue ahi tras disparar")
+    print("FALLO: quedan %d filas de viga tras un tiro" % len(despues))
     return 1
 
 
