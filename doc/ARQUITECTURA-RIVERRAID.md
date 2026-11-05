@@ -22,7 +22,7 @@ se pasa un byte**. No hay overlay ni paginación: lo que no cabe, no existe.
 | Estado | Bytes | Libre |
 |---|---|---|
 | Con `lib/vc.lib` + `sound.c` | 13.129 | 695 |
-| **Actual: drivers en línea** | **~13.540** | **~284** |
+| **Actual: drivers en línea** | **~13.640** | **~180** |
 
 **Decisión tomada:** el juego **NO enlaza `lib/vc.lib` ni `sound.c`**. Solo usa un
 puñado de operaciones triviales sobre el puerto indirecto, así que viven en dos
@@ -50,14 +50,15 @@ make CC65_HOME=D:/cc65
 sed -n '/Segment list/,/Exports list by name/p' output/game.map
 ```
 
-La línea `BSS` termina en **`003DFF`** cuando está a tope. Hoy acaba en `$3DD6`,
-con el stack en `$3E00` (512 B): **41 bytes de holgura**.
+La línea `BSS` termina en **`003DFF`** cuando está a tope.
 
-> ⚠️ **El stack no se recorta para hacer sitio.** Se intentó y el fondo del stack
-> acabó por debajo del final de BSS: las llamadas hondas pisaban `river_l/r`,
-> `ene_next` y `gen_sector`, y eso producía bugs "aleatorios" (enemigos que se
-> movían con la tabla en "quieto", choques contra algo invisible, el nivel
-> disparado a miles). Se libera RAM quitando código y datos.
+> ⚠️ **El stack no se recorta para hacer sitio.** Se intentó y la pila software
+> de cc65 acabó POR DEBAJO del final de BSS: las llamadas hondas pisaban
+> `river_l/r`, `island_l/r` y el estado del generador. De ahí venían los bugs
+> "aleatorios" del juego (explosiones contra algo invisible, reaparición sobre
+> una isla, enemigos que se movían con la tabla en "quieto"). Hoy el tope de
+> pila sale de `__STACKSTART__`, así que sigue solo al tamaño de BSS.
+> Se libera RAM quitando código y datos.
 
 ---
 
@@ -300,45 +301,6 @@ pantalla conforme sube la cámara.
 
 *(Detalles de balance — velocidades, tasas, puntajes exactos — se fijan en la
 fase 2, tras validar el scroll.)*
-
----
-
-## 7.1 El HUD (sprites + banda de raster fija)
-
-El HUD son **11 sprites** de 8x8 sin escala `HUD_SCALE` repartidos en dos filas:
-
-```
-fila 1 (Y=10)  [ puntos x4 ]  [ icono de vida ]        = 5 sprites
-fila 2 (Y=19)  [ barra x5  ]  [ numero de vidas ]      = 6 sprites
-```
-
-### Por que NO se tapa
-
-Hay dos limites distintos y conviene no confundirlos:
-
-1. **8 sprites por linea.** El core guarda en su line buffer los 8 sprites de
-   **menor indice de OAM** que cruzan una linea y descarta el resto. El HUD usa
-   los slots `0..10` y los objetos del juego el `11..20`, asi que en las lineas
-   del HUD **siempre ganan los del HUD**. Con 5 y 6 sprites por fila queda
-   margen de sobra.
-2. **El FONDO.** Esto era el bug de verdad: sin banda fija, detras del HUD se
-   veia la fila de cinta `(scroll_val + y) >> 3`, que **cambia en cada frame**.
-   No se puede pintar "la fila del HUD" porque no existe. Se resuelve con un
-   **split de raster**: `vid_set_raster(HUD_RASTER_LINE0, 0xFF)` deja las 3
-   primeras filas del tilemap con scroll 0 (banda superior) y el rio scrollea
-   solo en la banda media.
-
-   Como esas filas ya no se mueven, `generate_world_row()` las pinta **AGUA**
-   (tile y atributo) en vez de cesped: es lo que asoma por los huecos entre
-   digitos y entre las piezas de la barra. **OJO**: hay que forzarlo dentro del
-   generador, porque esas 3 filas siguen perteneciendo a la cinta de 32 y el
-   generador las reescribe al reutilizarlas.
-
-### La barra de combustible
-
-Cinco tramos **fijos** a 9 px de paso (7 de relleno + 2 de hueco). Se rellena con
-`fuel * 5 / FUEL_MAX`, y como `FUEL_MAX = 200` es multiplo de 5 la cuenta sale
-exacta: 200 -> 5 tramos, 160 -> 4, 0 -> ninguno.
 
 ---
 

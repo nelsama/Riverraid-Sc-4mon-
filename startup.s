@@ -10,12 +10,15 @@
 
 .import _main
 .import __BSS_RUN__, __BSS_SIZE__
-; Tope del stack SOFTWARE de cc65. Sale del linker (__STACKSTART__ de
-; config/programa.cfg) y NO se escribe a mano: cuando estaba hardcodeado en
-; $3DFF y BSS crecio hasta $3DFE, la pila empezo a empujar justo encima de las
-; ultimas variables (gen_sector, cp_*, hud_last_*). El juego "se movia solo":
-; enemigos con deriva cuando la tabla decia quietos y choques contra algo
-; invisible. Con el simbolo, cualquier cambio de tamano de BSS lo sigue.
+; Tope de la pila SOFTWARE de cc65. Sale del linker (__STACKSTART__ de
+; config/programa.cfg) y NO se escribe a mano.
+;
+; Esto estaba fijo a $3DFF y BSS crecio hasta $3EBA: la pila empezaba a
+; empujar 192 bytes DENTRO de las variables del juego, asi que se pisaban
+; river_l/r, island_l/r y el estado del generador. Los sintomas eran el
+; "choque con algo invisible" (la colision lee un cauce inventado) y el avion
+; reapareciendo sobre una isla. Con el simbolo, cualquier cambio de tamano de
+; BSS mueve el tope solo.
 .import __STACKSTART__
 .importzp c_sp
 
@@ -37,7 +40,7 @@ _init:
     txs
 
     ; Inicializar stack pointer de CC65 (software stack): arranca en el tope
-    ; del area de stack, o sea justo por encima del final de BSS.
+    ; del area de stack, justo por encima del final de BSS.
     lda #<__STACKSTART__
     sta c_sp
     lda #>__STACKSTART__

@@ -141,27 +141,27 @@ tools/            scripts de verificación y diagnóstico en Python
 
 | Segmento | Rango |
 |---|---|
-| ZP | `$20`–`$7F` |
-| Programa (código + datos + BSS) | `$0800`–`$3DFF` |
-| Stack | `$3E00`–`$3FFF` (512 B) |
+| ZP | `$20`–`$3F` |
+| Programa (código + datos + BSS) | `$0800`–`$3EBF` |
+| Stack | `$3EC0`–`$3FFF` (320 B) |
 
-**El stack NO se toca.** Durante una temporada se recortó a 320 B para meter
-más código y el fondo del stack acabó **por debajo del final de BSS**: las
-llamadas hondas pisaban `river_l/r`, `ene_next` y `gen_sector`, y de ahí salían
-los bugs "aleatorios" (enemigos que se movían cuando la tabla decía quietos,
-choques contra algo invisible, el nivel disparado a miles). Se libera RAM
-quitando código y datos, nunca stack.
+**El stack corto es la causa de los bugs "aleatorios" de este juego.**
 
-Dos trampas del arranque, ya arregladas:
+`startup.s` arrancaba la pila SOFTWARE de cc65 en una dirección **fija**
+(`$3DFF`) mientras BSS crecía por encima. La pila empezaba a empujar *dentro* de
+las variables y pisaba `river_l`/`river_r` (el perfil del río) y `island_l/r`.
+Los síntomas que producía:
 
-- `startup.s` ponía el puntero de pila de cc65 en `$3DFF` **a mano**. Ahora usa
-  `__STACKSTART__` del linker, así que crece o baja solo con el tamaño de BSS.
-- La regla de `startup.o` del makefile compilaba `$<` (`dirs-stamp`) en vez de
-  `startup.s`, así que el startup **nunca se recompilaba**. Unas compilaciones
-  usaban el objeto viejo sin avisar.
+- el avión explotaba **contra nada** (la colisión leía un cauce inventado),
+- reaparecía **sobre una isla** después de morir,
+- enemigos que se movían cuando la tabla de dificultad decía "quieto".
 
-Estado actual: BSS acaba en `$3DD6`, el stack empieza en `$3E00` (41 B de
-holgura) y el stack real usa ~20 B. Tamaño del binario: ~13,5 KB.
+Ahora el tope sale de `__STACKSTART__` (del linker), así que sigue solo al
+tamaño de BSS. Medido: 3 muertes invisibles -> 0 en el mismo escenario.
+
+> ⚠️ **No se recorta el stack para hacer sitio.** Se libera RAM quitando código
+y datos. Y `make` tiene que recompilar `startup.o`: la regla usaba `$<`, que es
+`dirs-stamp`, así que `startup.s` no se reensamblaba nunca.
 
 ---
 
