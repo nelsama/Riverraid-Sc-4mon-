@@ -933,7 +933,13 @@ static void hud_draw(void) {
  * sobre el anterior". Con un divisor de 32 cada tramo de ancho ocupa filas
  * contiguas de la cinta, asi que baja ENTERO y sale por abajo. */
 #define GEN_BLOCK      16     /* filas de mundo por bloque (medio tramo)  */
-#define GEN_SECTOR     16     /* bloques entre puentes (1 puente cada uno)*/
+/* BLOQUES POR TRAMO: 12 -> 12*16 = 192 filas entre puentes.
+ * A SCROLL_NORM (8/8 = 1 px/frame) son 1536 px = 1536 frames = ~25,6 s a
+ * 60 Hz. Antes eran 16 bloques (256 filas, ~34 s) y el usuario notaba que la
+ * dificultad tardaba demasiado en subir.
+ * GEN_BLOCK sigue siendo 16 porque TIENE que dividir a 32; el que cambia es
+ * cuantos bloques hay por tramo. */
+#define GEN_SECTOR     12     /* bloques entre puentes (1 puente cada uno)*/
 #define GEN_AHEAD      2      /* filas de cinta fuera de la vista (ver
                                * advance_scroll): 32 de cinta - 30 visibles */
 /* ANCHO: el usuario lo quiere ancho de verdad. El avion mide 16 px (2 celdas)
@@ -963,6 +969,56 @@ static void hud_draw(void) {
  * la tierra central y los dos brazos MAS ANCHOS (los del arranque). */
 #define GEN_SPLIT_W    (GEN_ISLAND_W + 2 * GEN_ARM_EASY)  /* 23 */
 
+/* ===========================================================================
+ * PROGRESION DE DIFICULTAD: UNA TABLA, UN NIVEL POR PUENTE
+ * ===========================================================================
+ * Cada puente cruzado sube un nivel. El nivel satura en NIVEL_MAX, o sea que a
+ * partir del puente 6 la dificultad se queda quieta (no se estrecha ni se
+ * acelera sin fin: llega un punto en que el juego es injugable).
+ *
+ *   nivel | puentes | barcos   | helis    | bidon | ancho min
+ *   ------+---------+----------+----------+-------+----------
+ *     0   |    1    | quieto   | ausente  |  18   |    20
+ *     1   |    2    | quieto   | quieto   |  20   |    19
+ *     2   |    3    | 1 px/4f  | ausente  |  22   |    18
+ *     3   |    4    | 1 px/3f  | 1 px/3f  |  26   |    17
+ *     4   |    5    | 1 px/2f  | 1 px/2f  |  30   |    16
+ *     5   |   6+    | 1 px/1f  | 1 px/1f  |  34   |    15
+ *
+ * "1 px/Nf" = se desplaza 1 px de lado cada N frames. 0 = NO se desplaza de
+ * lado (sigue bajando con el scroll, o sea que se le puede disparar y chocar).
+ *
+ * El HELICOPTERO ausente (HX = 0) no aparece hasta el nivel 2: los dos
+ * primeros tramos son solo barcos.
+ *
+ * CAUCE: el ancho minimo es el suelo que gen_w_min_now() impone al bloque.
+ * Ademas de estrecharse, deja menos agua entre orillas = mas estrecho de
+ * verdad. 15 es el minimo seguro: el avion mide 2 celdas y la orilla 1 a cada
+ * lado, asi que con menos el jugador siente que rozza paredes invisibles. */
+#define NIVEL_MAX  5
+
+/* Columnas de la tabla. */
+#define PROG_BARCO   0   /* frames entre pasos de lado del barco (0=quieto) */
+#define PROG_HELI    1   /* ... del helicoptero (0 = no aparece)            */
+#define PROG_BIDON   2   /* filas de mundo entre bidones                    */
+#define PROG_ANCHO   3   /* ancho minimo del cauce                          */
+#define PROG_COLS    4
+
+static const uint8_t prog_tab[NIVEL_MAX + 1][PROG_COLS] = {
+    /* barco  heli  bidon  ancho */
+    {     0,     0,    18,    20 },   /* nivel 0: puente 1 */
+    {     0,     4,    20,    19 },   /* nivel 1: puente 2 */
+    {     4,     0,    22,    18 },   /* nivel 2: puente 3 */
+    {     3,     3,    26,    17 },   /* nivel 3: puente 4 */
+    {     2,     2,    30,    16 },   /* nivel 4: puente 5 */
+    {     1,     1,    34,    15 }    /* nivel 5: puente 6+ */
+};
+
+/* Nivel actual, derivado del tramo (gen_sector empieza en 1).
+ * Va mas abajo, junto a gen_sector, porque necesita esa variable. */
+static uint8_t nivel_actual(void);
+static uint8_t nivel_val(uint8_t col);
+
 /* PROGRESION: cada puente (sector) estrecha el rio. Con GEN_SECTOR bloques por
  * tramo y 4 tramos, es decir 4 puentes, el ancho llega al minimo duro:
  *
@@ -981,7 +1037,7 @@ static void hud_draw(void) {
  * cauce se vea ANGOSTARSE al llegar y ENSANCHARSE despues. */
 #define GEN_PIER_L     12     /* borde izquierdo del cauce en el puente   */
 #define GEN_PIER_R     27     /* borde derecho (= 12..27 con orillas)     */
-#define GEN_FUNNEL_BLK 14     /* primer bloque de embudo (14 y 15)        */
+#define GEN_FUNNEL_BLK 10     /* primer bloque de embudo (10 y 11 de 12)  */
 /* PUENTE MACIZO: el travesaño cruza el cauce ENTERO, sin hueco. En el River
  * Raid de verdad el avion vuela a la altura del puente, asi que no hay forma de
  * esquivarlo: si llegas sin haberlo destruido, chocas. Antes habia un hueco de
@@ -1018,6 +1074,22 @@ static uint8_t  gen_puente_inicial;           /* 1 = esta fila es del PUENTE    
 static uint8_t  gen_block_row;        /* filas desde el ultimo bloque     */
 static uint8_t  gen_block_idx;        /* bloque dentro del sector (0..15) */
 static uint16_t gen_sector;           /* numero de sector (= puente)      */
+
+/* --- NIVEL DE DIFICULTAD -------------------------------------------------
+ * Sale de gen_sector, que es el tramo en el que vamos (1 = primero). El nivel
+ * satura en NIVEL_MAX, asi que a partir del puente 6 la dificultad no cambia.
+ * Al morir, gen_restore_checkpoint() retrocede gen_sector, con lo que el nivel
+ * baja tambien: la dificultad del tramo es la del tramo, no la de la partida. */
+static uint8_t nivel_actual(void) {
+    uint16_t n = (uint16_t)(gen_sector - 1);
+    if (n > NIVEL_MAX) n = NIVEL_MAX;
+    return (uint8_t)n;
+}
+
+/* Valor de la tabla para el nivel actual. */
+static uint8_t nivel_val(uint8_t col) {
+    return prog_tab[nivel_actual()][col];
+}
 
 /* CHECKPOINT (documento de puentes): al cruzar un puente se guarda el estado
  * del generador; al morir se restaura y el tramo se vuelve a empezar. Asi cada
@@ -1069,28 +1141,29 @@ static uint8_t gen_width_from(bits) {
     return gen_width_tab[bits & 0x0F];
 }
 
-/* --- PROGRESION: de facil (tramo 1) a dificil (a partir del tramo 4) ---
- *
- * `paso` = cuantos tramos se ha avanzado desde el arranque, con TOPE: el juego
- * se estabiliza en el nivel mas duro en vez de estrecharse sin fin.
+/* --- PROGRESION: de facil (tramo 1) a dificil (a partir del nivel 5) ---
  *
  * Se aplica SOLO aqui, al generar un bloque nuevo. Nunca se resta nada a
  * gen_left/gen_right ya calculados: como la curva se interpola 1 celda por
  * fila, cualquier resta se deshace en la fila siguiente y el ajuste no llega a
- * verse. Por eso el minimo se aplica sobre el ANCHO OBJETIVO del bloque. */
-#define GEN_STEP()  ((uint8_t)(((gen_sector - 1) < GEN_RAMP_SECTORS) ? \
-                               ((gen_sector - 1) & 0xFF) : GEN_RAMP_SECTORS))
-
-/* Ancho minimo del cauce segun el tramo: 7 -> 6 -> 5. */
+ * verse. Por eso el minimo se aplica sobre el ANCHO OBJETIVO del bloque.
+ *
+ * El valor sale de prog_tab[] (ver arriba), no de una formula: asi la tabla
+ * del juego y el codigo no se pueden desincronizar. */
 static uint8_t gen_w_min_now(void) {
-    uint8_t paso = GEN_STEP();
-    return (uint8_t)(GEN_W_MIN - ((paso > 2) ? 2 : paso));
+    return nivel_val(PROG_ANCHO);
 }
 
-/* Ancho minimo de cada brazo junto a la isla: 7 -> 6 -> 5. */
+/* Ancho minimo de cada brazo junto a la isla.
+ *
+ * No tiene columna propia en la tabla: se deriva del ancho del cauce, que ya
+ * marca la dificultad. El brazo baja de GEN_ARM_EASY a GEN_ARM_MIN a medida que
+ * el nivel sube, repartiendo el mismo recorrido entre NIVEL_MAX pasos. */
 static uint8_t gen_arm_now(void) {
-    uint8_t paso = GEN_STEP();
-    return (uint8_t)(GEN_ARM_EASY - ((paso > 2) ? 2 : paso));
+    uint8_t lvl = nivel_actual();
+    uint16_t span = (uint16_t)(GEN_ARM_EASY - GEN_ARM_MIN);
+    uint8_t baja = (uint8_t)((span * lvl) / NIVEL_MAX);
+    return (uint8_t)(GEN_ARM_EASY - baja);
 }
 
 /* Precalcula el bloque: avanza el LFSR y fija el ANCHO, la CURVA y la ISLA
@@ -1233,9 +1306,13 @@ static void gen_reset(void) {
     /* Se entra en el bloque 1 del tramo 1: el bloque 0 es el puente y al
      * arrancar ya se ha cruzado (si no, la partida empieza dentro del puente).
      * OJO: aqui NO se avanza el LFSR; el valor del bloque 0 lo consume
-     * gen_new_block(), igual que en todos los demas bloques. */
+     * gen_new_block(), igual que en todos los demas bloques.
+     * OJO TAMBIEN con el valor: gen_new_block() hace gen_block_idx++ nada mas
+     * entrar, asi que hay que poner 0 para que el primer bloque del tramo sea
+     * el 1. Con 1 se saltaba un bloque y el puente llegaba UNA FILA antes de
+     * tiempo: el tramo medido salia de 160 filas en vez de 192. */
     gen_block_row = 0;
-    gen_block_idx = 1;
+    gen_block_idx = 0;
     gen_sector    = 1;
     gen_new_block();
 
