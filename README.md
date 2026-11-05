@@ -142,13 +142,26 @@ tools/            scripts de verificación y diagnóstico en Python
 | Segmento | Rango |
 |---|---|
 | ZP | `$20`–`$7F` |
-| Programa (código + datos + BSS) | `$0800`–`$3EBF` |
-| Stack | `$3EC0`–`$3FFF` (320 B) |
+| Programa (código + datos + BSS) | `$0800`–`$3DFF` |
+| Stack | `$3E00`–`$3FFF` (512 B) |
 
-**Cuidado con el stack**: se probó recortarlo a 256 B y quedaba **por debajo
-del final de BSS**, así que las rutinas de división del runtime pisaban las
-variables (las vidas y el marcador salían mal). 320 B deja ~54 B de holgura
-sobre BSS y el stack real solo usa 23.
+**El stack NO se toca.** Durante una temporada se recortó a 320 B para meter
+más código y el fondo del stack acabó **por debajo del final de BSS**: las
+llamadas hondas pisaban `river_l/r`, `ene_next` y `gen_sector`, y de ahí salían
+los bugs "aleatorios" (enemigos que se movían cuando la tabla decía quietos,
+choques contra algo invisible, el nivel disparado a miles). Se libera RAM
+quitando código y datos, nunca stack.
+
+Dos trampas del arranque, ya arregladas:
+
+- `startup.s` ponía el puntero de pila de cc65 en `$3DFF` **a mano**. Ahora usa
+  `__STACKSTART__` del linker, así que crece o baja solo con el tamaño de BSS.
+- La regla de `startup.o` del makefile compilaba `$<` (`dirs-stamp`) en vez de
+  `startup.s`, así que el startup **nunca se recompilaba**. Unas compilaciones
+  usaban el objeto viejo sin avisar.
+
+Estado actual: BSS acaba en `$3DD6`, el stack empieza en `$3E00` (41 B de
+holgura) y el stack real usa ~20 B. Tamaño del binario: ~13,5 KB.
 
 ---
 

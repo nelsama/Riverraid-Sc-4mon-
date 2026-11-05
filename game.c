@@ -107,9 +107,15 @@ static uint8_t  scroll_step;
 /* ===========================================================================
  * HUD (split de raster: banda superior fija)
  * ===========================================================================
- * El HUD se dibuja en las filas 1-2 del tilemap, que quedan en la banda
- * superior (scroll 0). La banda media (filas 3+) scrollea con el rio. */
-#define HUD_RASTER_LINE0  24   /* banda superior = 3 filas (0 = margen, 1-2 HUD) */
+ * El HUD se dibuja en las filas 0-2 del tilemap, que quedan en la banda
+ * superior (scroll 0). La banda media (filas 3+) scrollea con el rio.
+ *
+ * LAS TRES FILAS, NO DOS: los sprites del HUD son de 8x8 y van en DOS alturas
+ * (puntos + icono de vida arriba, barra + numero de vidas debajo), pero el
+ * icono arranca en Y=10 y el numero acaba en Y=26, o sea que necesita 3 filas
+ * de tilemap (0, 1 y 2). Con 2 filas el numero de vidas caia sobre el rio y se
+ * veia cortado por el borde de la banda. */
+#define HUD_RASTER_LINE0  24   /* banda superior = 3 filas de 8 px       */
 #define HUD_RASTER_LINE1  216  /* banda inferior empieza en linea 216 (filas 27-29) */
 
 /* Sprite del deposito de combustible. La paleta 3 se reprograma en
@@ -148,36 +154,61 @@ static uint8_t  scroll_step;
 /* Y=10: la fila 1 del tilemap (pixeles 8..15). La fila 0 (0..7) la recorta
  * el overscan de muchos monitores (manual del core, 1.9 y 5): con Y=2 el HUD
  * quedaba medio fuera de pantalla. Aqui sobra 2 px de margen por arriba. */
-/* Y=10: la fila 1 del tilemap (pixeles 8..15). La fila 0 (0..7) la recorta
- * el overscan de muchos monitores (manual del core, 1.9 y 5). */
-#define HUD_Y          10      /* FILA 1 del HUD (puntos + icono vida) */
-#define HUD_Y2         19      /* FILA 2 del HUD (barra + numero vidas):
+#define HUD_Y          10      /* FILA 1 del HUD (puntos) */
+#define HUD_Y2         19      /* FILA 2 del HUD (barra):
                                 * 10 + 9 deja 1 px de aire y cabe en la
                                 * fila 2 del tilemap (16..23)           */
 #define HUD_SCORE_X    24      /* puntos (4 digitos x 8 px)          */
+/* VIDAS: icono y numero APILADOS en la columna HUD_LIVES_X, pegados a los
+ * digitos de puntos: el icono en la fila 1 (Y = HUD_Y) y el numero 9 px mas
+ * abajo, que cae en la fila 2 (Y = HUD_Y2).
+ *
+ * POR QUE APILADOS Y NO EN LA MISMA FILA: el core permite 8 sprites por linea y
+ * elige los 8 de MENOR INDICE de OAM. El HUD usa los slots 0..10 y los enemigos
+ * el 11 en adelante, asi que un objeto que cruzara la fila del HUD lo taparia en
+ * las lineas donde no quedara sitio. Con 4 digitos + 1 icono = 5 en la fila 1 y
+ * 5 barras + 1 numero = 6 en la fila 2 quedamos por debajo del limite y el
+ * HUD se ve SIEMPRE, aunque un heli o un bidon pase por ahi. */
+#define HUD_Y_TOP      HUD_Y       /* icono de vida: fila 1            */
+#define HUD_Y_TOP2     HUD_Y2      /* numero de vidas: fila 2          */
 /* HUD_SCALE = 0: los sprites del HUD son de 8x8, NO de 16x16. Por eso cada
  * pieza de la barra ocupa 8 px y el paso HUD_FUEL_STEP es mayor que 8: deja
  * un hueco entre piezas en vez de solaparlas. */
 #define HUD_FUEL_X     24      /* barra de combustible (FILA 2)      */
-#define HUD_FUEL_W     5       /* celdas de la barra: 5 + vidas = 6, y
-                                * deja 2 huecos del line buffer (8)
-                                * para los objetos que entran por
-                                * arriba (avion, helicoptero, bidon) */
+#define HUD_FUEL_W     5       /* tramos FIJOS de la barra (antes 8): a
+                                * 24 + 4*9 + 7 = 67 px no llega al cauce y la
+                                * barra se lee de un vistazo */
 /* Paso de 9 px: la pieza mide 7 y deja 1 px transparente (columna 7 del
  * patron) + 1 px de hueco, asi la barra se lee como una barra continua. */
 #define HUD_FUEL_STEP  9       /* 7 px de relleno + 2 px de hueco     */
-/* VIDAS: el icono va en la FILA 1 (a la derecha de los puntos) y el NUMERO en
- * la FILA 2 (a la derecha de la barra). Asi la fila 2 queda en 5+1 = 6
- * sprites y la fila 1 en 4+1 = 5, ambas dentro del limite.
+/* VIDAS: el ICONO va en la fila 1 (Y = HUD_Y_TOP) y el NUMERO 9 px mas abajo
+ * (Y = HUD_Y_TOP2), apilados en la MISMA columna a la derecha de los puntos.
  *
  * OJO CON EL REPARTO: el core de video NO dibuja los 32 sprites uno sobre
  * otro. Tiene un line buffer de 8 entradas (NSL = 8 en video_core.vhd): los
  * primeros 8 sprites que cruzan una linea se guardan y el 9.o EN ADELANTE NO
- * SE DIBUJA. El HUD tenia los 14 en Y=10, asi que en hardware real
- * desaparecian las 4 ultimas barras y el bloque de vidas. Por eso va partido
- * en dos filas. */
-#define HUD_LIVES_X    72      /* icono de vida   (Y = HUD_Y )       */
-#define HUD_LIVESNUM_X 72      /* numero de vidas (Y = HUD_Y2)       */
+ * SE DIBUJA.
+ *
+ * Ese limite es TAMBIEN la razon de que el HUD se viera tapado: el core elige
+ * "los primeros 8" por INDICE DE OAM, y los enemigos usan el slot 11, o sea
+ * que cualquier objeto que cruzara una linea del HUD se dibujaba por DELANTE.
+ * El HUD no puede tener prioridad sobre ellos (no hay prioridad por sprite
+ * mas alla del indice), asi que la solucion es que NINGUN objeto del juego
+ * comparta linea con el HUD:
+ *
+ *   fila 1 (Y = 10)  [puntos x4] [icono vida]   = 5 sprites
+ *   fila 2 (Y = 19)  [barra FUEL x5] [num.vidas] = 6 sprites
+ *
+ * Ambas filas quedan por debajo de 8 y, sobre todo, el HUD usa los slots MAS
+ * BAJOS de OAM, asi que ningun objeto del juego se dibuja por encima.
+ *
+ * El FONDO si necesita ayuda: detras del HUD se ve la fila de cinta
+ * (scroll_val + y) >> 3, que cambia en cada frame. Por eso el HUD va en la
+ * BANDA SUPERIOR del raster (scroll 0) y generate_world_row() pinta esas filas
+ * en AGUA. Ver HUD_RASTER_LINE0. */
+#define HUD_LIVES_X    72      /* icono y numero de vidas (misma columna) */
+#define HUD_LIVESNUM_X 72
+#define HUD_ROW_TOP    3       /* filas de cinta que ocupa el HUD          */
 /* 72 cae justo a la derecha de la barra: esta acaba en
  * HUD_FUEL_X + (HUD_FUEL_W-1)*HUD_FUEL_STEP + 7 = 24 + 36 + 7 = 67, asi que
  * quedan 5 px de aire (antes estaban en 120, a media pantalla, y el bloque de
@@ -478,7 +509,11 @@ static uint8_t   fuel_refuel_tick;/* contador de frames de contacto       */
 static uint8_t   river_l[VC_MAP_ROWS];
 static uint8_t   river_r[VC_MAP_ROWS];
 static uint8_t   island_l[VC_MAP_ROWS];
-static uint8_t   island_r[VC_MAP_ROWS];
+/* OJO: NO se guarda island_r. El borde derecho de la isla es SIEMPRE
+ * island_l + GEN_ISLAND_W - 1: el generador da el mismo ancho a todas las filas
+ * de la isla (comprobado con tools/verificar_colision.py, que reconstruye el
+ * cauce desde aqui y lo compara con el tilemap: 0 discrepancias). Costaba 32
+ * bytes de RAM que vienen de perlas para el stack. */
 
 /* PUENTE: 1 si la fila de cinta es la viga (mata salvo el hueco). Se lleva en
  * RAM porque gen_bridge solo vale para la fila que se esta generando. */
@@ -486,10 +521,9 @@ static uint8_t   puente_bit[VC_MAP_ROWS];
 
 /* MARCA DE ISLA: vacia. Existio como mapa de bits (256 bytes) para que la
  * animacion del oleaje no repintara tierra, pero esa animacion esta desactivada
- * y nadie mas lo leia, asi que se quito para liberar RAM. Se dejan los macros
- * como no-op para no tocar las llamadas que marcan celdas al pintar la fila. */
-#define ISLA_SET(row, col)  ((void)0)
-#define ISLA_CLR(row, col)  ((void)0)
+ * y nadie mas lo leia, asi que se quito para liberar RAM. Ya no quedan macros
+ * ISLA_*: las dos llamadas de generate_world_row() costaban 34 bytes de codigo
+ * y no hacian nada. */
 
 /* Deposito de combustible (sprite). */
 static uint8_t   fuel_active;
@@ -575,11 +609,9 @@ static const uint8_t tile_bridge_p0[8] = { 0xFF,0xFF,0xFB,0xFF,0xFF,0xFE,0xFF,0x
 static const uint8_t tile_bridge_p1[8] = { 0x00,0x00,0x04,0x00,0x00,0x01,0x00,0x00 };
 
 
-/* CALLE DEL PUENTE (TILE_ROAD): la franja de tierra que llega a los dos lados
- * del cauce, en las mismas filas que la viga. Se pinta con PAL_EDGE, donde el
- * indice 2 es ARENA; el 0 es transparente (dejaria ver el fondo), asi que va
- * con p1=1 -> indice (1<<1)|0 = 2. */
-static const uint8_t tile_road_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+/* CALLE DEL PUENTE (TILE_ROAD): usa el patron del AGUA (ver load_patterns).
+ * Aqui vivia tile_road_p1, una franja de arena opaca; se quito al cambiar la
+ * calle a "canal que cruza la tierra" y no se usaba. */
 
 
 /* Fondo del panel de GAME OVER: opaco y en INDICE 1, que en PAL_MENU es el
@@ -778,9 +810,11 @@ static void read_input(void) {
  * HUD EN SPRITES
  * ===========================================================================
  * El HUD se dibuja con sprites en la franja superior (fuera del tilemap), de
- * modo que el scroll del rio NO puede arrastrarlo. Distribucion (una fila):
+ * modo que el scroll del rio NO puede arrastrarlo. Distribucion (dos filas):
  *
- *   [digito score x4]   [barra FUEL x8]   [icono vida][digito de vidas]
+ *   fila 0 (Y=0)  :                [icono vida]
+ *   fila 1 (Y=10) : [puntos x4]    [num. vidas]
+ *   fila 2 (Y=19) : [barra FUEL x5]
  *
  * Los sprites se colocan UNA vez en hud_setup(); hud_draw() solo reescribe el
  * patron de lo que cambia (digitos, celdas de la barra y vidas).
@@ -804,15 +838,35 @@ static void hud_setup(void) {
     for (i = 0; i < 4; i++)
         fv_sprite_move((uint8_t)(SPR_HUD_BASE + i), (uint16_t)(HUD_SCORE_X + i * 8),
                        HUD_Y, VC_SPPAL_1 | HUD_SCALE);
-    for (i = 0; i < HUD_FUEL_W; i++)
+    for (i = 0; i < 4; i++)
+        fv_oam((uint8_t)(SPR_HUD_BASE + i), VC_OAM_COLL, 0);
+    for (i = 0; i < 5; i++) {
         fv_sprite_move((uint8_t)(SPR_HUD_FUEL + i),
                        (uint16_t)(HUD_FUEL_X + i * HUD_FUEL_STEP),
                        HUD_Y2, VC_SPPAL_1 | HUD_SCALE);
-    /* Icono en la FILA 1; el numero en la FILA 2 (ver la rejilla de HUD_LIVES_X). */
-    fv_sprite_move((uint8_t)(SPR_HUD_LIVES), HUD_LIVES_X, HUD_Y,
+        fv_oam((uint8_t)(SPR_HUD_FUEL + i), VC_OAM_COLL, 0);
+    }
+    /* La barra tiene CINCO tramos: el sexto sprite del rango (13) se apaga una
+     * vez para que no quede flotando con el patron que traiga el OAM. */
+    fv_sprite_disable((uint8_t)(SPR_HUD_FUEL + 5));
+    /* PRIORIDAD DEL HUD: el core dibuja el sprite de MENOR INDICE por encima,
+     * pero los enemigos usan el slot de MENOR indice de todos (SPR_ENE_BOAT =
+     * 11), asi que cualquier objeto que cruce una linea del HUD lo tapaba.
+     *
+     * La solucion es que el HUD NO comparta linea con nada: icono y numero de
+     * vidas van APILADOS en la columna HUD_LIVES_X (Y=0 y Y=9), en x 72, que
+     * queda fuera del cauce. Asi la fila 1 solo tiene los 4 digitos (4 sprites)
+     * y la fila 2 las 5 celdas de la barra (5), por debajo del limite de 8
+     * sprites por linea del core. */
+    fv_sprite_move((uint8_t)(SPR_HUD_LIVES), HUD_LIVES_X, HUD_Y_TOP,
                    VC_SPPAL_1 | HUD_SCALE);
     fv_sprite_move((uint8_t)(SPR_HUD_LIVES + 1),
-                   HUD_LIVESNUM_X, HUD_Y2, VC_SPPAL_1 | HUD_SCALE);
+                   HUD_LIVESNUM_X, HUD_Y_TOP2, VC_SPPAL_1 | HUD_SCALE);
+    /* COLL_POINT a 0 en los 11 sprites del HUD: su Y nunca esta a 248, asi que
+     * el barrido del core los mira y, si su punto de colision cayera sobre el
+     * cesped, pondria SOLID_HIT con un "choque" que el jugador no ve. */
+    fv_oam(SPR_HUD_LIVES, VC_OAM_COLL, 0);
+    fv_oam((uint8_t)(SPR_HUD_LIVES + 1), VC_OAM_COLL, 0);
     hud_last_digit[0] = hud_last_digit[1] = hud_last_digit[2] = hud_last_digit[3] = 0xFF;
     hud_last_lives = 0xFF;
 }
@@ -836,15 +890,17 @@ static void hud_draw(void) {
         }
     }
 
-    /* Barra de combustible: X = HUD_FUEL_X + i * HUD_FUEL_STEP. Cada pieza
-     * ocupa 9 px (7 de relleno + 2 de hueco), asi que el CENTRO de la pieza i
-     * cae en +4 y consulta la celda (4 / 9) = 0: cada pieza es una celda. */
+    /* Barra de combustible: cinco tramos fijos. Cada pieza ocupa 9 px (7 de
+     * relleno + 2 de hueco); se encienden las primeras `filled` piezas.
+     *
+     * FUEL_MAX = 200 es multiplo de 5, asi que la tabla sale exacta: 200 -> 5
+     * tramos, 0 -> ninguno, y cada tramo son 40 unidades. La division es la del
+     * runtime (16 bits), no hace falta redondear. */
     {
-        uint8_t filled = (uint8_t)(((uint16_t)fuel * HUD_FUEL_W) / FUEL_MAX);
-        for (i = 0; i < HUD_FUEL_W; i++) {
-            uint16_t center = (uint16_t)(HUD_FUEL_X + i * HUD_FUEL_STEP + 4);
-            uint8_t cell = (uint8_t)((center - HUD_FUEL_X) / HUD_FUEL_STEP);
-            uint8_t on   = (uint8_t)(cell < filled);
+        uint8_t filled = (uint8_t)(((uint16_t)fuel * 5) / FUEL_MAX);
+        if (filled > 5) filled = 5;
+        for (i = 0; i < 5; i++) {
+            uint8_t on = (uint8_t)(i < filled);
 
             if (on != hud_last_slot_on[i]) {
                 hud_last_slot_on[i] = on;
@@ -1008,7 +1064,7 @@ static void hud_draw(void) {
 static const uint8_t prog_tab[NIVEL_MAX + 1][PROG_COLS] = {
     /* barco  heli  bidon  ancho  brazo */
     {     0,     0,    18,    20,     8 },   /* nivel 0: puente 1 */
-    {     0,     4,    20,    19,     8 },   /* nivel 1: puente 2 */
+    {     0,     0,    20,    19,     8 },   /* nivel 1: puente 2 */
     {     4,     0,    22,    18,     7 },   /* nivel 2: puente 3 */
     {     3,     3,    26,    17,     7 },   /* nivel 3: puente 4 */
     {     2,     2,    30,    16,     6 },   /* nivel 4: puente 5 */
@@ -1125,12 +1181,14 @@ static uint8_t gen_curve_toward(uint8_t cur, uint8_t target) {
  * SE DEJA COMO TABLA y no como formula: se probo `GEN_W_MIN + (bits*13)/15` y
  * difiere en 7 de los 16 valores (9,9,10,11... frente a 9,10,11,12...), o sea
  * que CAMBIA EL TRAZADO DEL RIO. Son 16 bytes y el comportamiento es el
- * validado; no merece la pena arriesgar la forma del cauce por ellos. */
+ * validado; no merece la pena arriesgar la forma del cauce por ellos.
+ * (Se probo tambien a comprimirla en nibbles: el codigo de descompresion
+ * costaba 90 bytes mas de los 8 que ahorraba.) */
 static const uint8_t gen_width_tab[16] = {
     9, 10, 11, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19, 20, 21, 22
 };
 
-static uint8_t gen_width_from(bits) {
+static uint8_t gen_width_from(uint8_t bits) {
     return gen_width_tab[bits & 0x0F];
 }
 
@@ -1163,14 +1221,25 @@ static void gen_new_block(void) {
 
     gen_lfsr_step();
 
-    /* --- Sector: 16 bloques y el 16 es el puente --- */
+    /* --- Sector: bloque a bloque; el numero GEN_SECTOR es el puente --- */
     gen_block_idx++;
     gen_funnel = 0;
     gen_bridge = 0;
 
-    if (gen_block_idx >= GEN_SECTOR) {
+    /* `==` Y NO `>=`: con `>=`, si gen_block_idx llegaba a GEN_SECTOR por
+     * cualquier camino (por ejemplo restaurado de un checkpoint), el bloque se
+     * tomaba por puente OTRA vez, hacia gen_sector++ y volvia a 0. Pero el
+     * siguiente bloque entraba de nuevo con el valor alto y el puente se
+     * regeneraba UNA VEZ POR FILA: gen_sector se disparaba a miles y el juego
+     * pasaba al nivel 5 sin haber cruzado ningun puente (aparecian helis
+     * moviendose en el primer tramo). Con `==` el puente solo se genera en el
+     * bloque exacto, y un valor raro no lo repite.
+     *
+     * El `>=` de mas abajo (embudo) SI es correcto: el embudo ocupa todos los
+     * bloques desde GEN_FUNNEL_BLK hasta el del puente. */
+    if (gen_block_idx == GEN_SECTOR) {
         /* PUENTE: cuenta como nivel y usa el ancho FIJO del puente (el embudo
-         * de los bloques 14 y 15 ya ha llevado el cauce hasta ahi). */
+         * de los bloques 10 y 11 ya ha llevado el cauce hasta ahi). */
         gen_bridge = 1;
         gen_sector++;
         gen_block_idx = 0;
@@ -1212,11 +1281,14 @@ static void gen_new_block(void) {
     else        c = (uint8_t)(3 - c);                /* izquierda */
     if (c > GEN_CURVE_MAX) c = GEN_CURVE_MAX;
     {
-        uint8_t mid = (uint8_t)((GEN_ZONE_L + GEN_ZONE_R + 1) / 2);
+        /* Centro de la zona. Se calcula con DESPLAZAMIENTO y no con `/ 2`: el
+         * compilador no siempre lo convierte en un simple LSR, y cuando llama
+         * a udiv arrastra 40 bytes de libreria que aqui no caben. */
+        uint8_t mid = (uint8_t)((GEN_ZONE_L + GEN_ZONE_R + 1) >> 1);
         if (gen_seed_hi & 0x40) center = (uint8_t)(mid + c);
         else                     center = (uint8_t)(mid - c);
     }
-    l = (uint8_t)(center - (w / 2));
+    l = (uint8_t)(center - (w >> 1));
     r = (uint8_t)(l + w - 1);
     if (l < GEN_ZONE_L) { l = GEN_ZONE_L; r = (uint8_t)(l + w - 1); }
     if (r > GEN_ZONE_R) { r = GEN_ZONE_R; l = (uint8_t)(r - w + 1); }
@@ -1334,6 +1406,9 @@ static void gen_restore_checkpoint(void) {
     gen_seed_hi   = cp_hi;
     gen_seed_lo   = cp_lo;
     gen_block_row = cp_block_row;
+    /* BLINDAJE: si el checkpoint trae un bloque fuera de rango, el siguiente
+     * bloque se tomaria por puente. Con `==` en gen_new_block() ya no puede
+     * repetirse, asi que basta con no salirse de rango. */
     gen_block_idx = cp_block_idx;
     gen_sector    = cp_sector;
     gen_crossed   = 0;
@@ -1570,12 +1645,10 @@ static uint8_t generate_world_row(uint32_t n) {
      * otra fila y el avion muere sin obstaculo. */
     river_l[cinta_row]  = gen_left;
     river_r[cinta_row]  = gen_right;
+    /* SOLO se guarda la columna izquierda. El borde derecho se reconstruye en
+     * celda_agua() como il + GEN_ISLAND_W - 1, que es el ancho MAXIMO al que
+     * llega la isla. 0xFF = esta fila no tiene isla. */
     island_l[cinta_row] = il;
-    /* Borde derecho REAL de esta fila (ver island_r). */
-    island_r[cinta_row] = ir;
-    /* El borde derecho de la isla se reconstruye en celda_agua(): siempre mide
-     * GEN_ISLAND_W pegada a il (ver el comentario de island_l). Se guarda
-     * `ir` en la variable local solo para pintar la fila. */
 
     /* --- Pinta la fila en UNA sola pasada, con tile y atributo siempre ---
      *
@@ -1621,10 +1694,6 @@ static uint8_t generate_world_row(uint32_t n) {
                     tile = TILE_GRASS;
                     attr = PAL_EDGE;
                 }
-                /* Marca la celda como TIERRA para que el oleaje no la pise
-                 * (update_water_anim borra huecos si repinta un tile que no es
-                 * agua). Se marcaba solo con ISLA_CLR, o sea nunca. */
-                ISLA_SET(cinta_row, col);
             } else {
                 tile = wave;                             attr = PAL_WATER;
             }
@@ -1646,16 +1715,33 @@ static uint8_t generate_world_row(uint32_t n) {
                     /* CALLE: la franja de tierra que llega a los lados del
                      * cauce, en las mismas filas que el puente. Sin esto la
                      * viga "arrancaba del cesped" y no habia camino: es el
-                     * puente completo (calle + viga + hueco). */
+                     * puente completo (calle + viga + hueco).
+                     * TILE_ROAD lleva el patron del AGUA: el indice 3 es el
+                     * azul del cauce y las "paredes" de los dos bordes entran
+                     * en el indice 1, que en PAL_WATER es azul OSCURO. Asi la
+                     * calle se lee como un canal que cruza la tierra. */
                     tile = TILE_ROAD;
-                    attr = PAL_EDGE;           /* indice 2 = arena */
+                    attr = PAL_WATER;
                 }
             }
 
             VID_ADDR_LO = (uint8_t)cell;
             VID_ADDR_HI = (uint8_t)((cell >> 8) & 0x07);   /* area 0 = tilemap */
+            /* FORZADO DEL HUD: las filas del HUD del tilemap son AGUA siempre.
+             *
+             * Esas filas SI estan en la cinta (la cinta tiene 32 filas y el HUD
+             * usa las 3 primeras), asi que el generador las reescribe cada vez
+             * que el scroll las reutiliza. Si no se fuerzan aqui, al rato el
+             * cesped vuelve y el HUD se recorta contra el verde.
+             *
+             * El agua es lo que asoma por los huecos de los sprites del HUD y
+             * entre las piezas de la barra; no tapa nada porque la banda
+             * superior tiene scroll 0 y el HUD se dibuja encima. */
+            if (cinta_row < HUD_ROW_TOP) {
+                tile = (uint8_t)((cinta_row & 1) ? TILE_WATER2 : TILE_WATER);
+                attr = PAL_WATER;
+            }
             VID_DATA    = tile;
-            ISLA_CLR(cinta_row, col);
 
             VID_ADDR_LO = (uint8_t)cell;
             VID_ADDR_HI = (uint8_t)(VC_AREA_ATTR | ((cell >> 8) & 0x07));
@@ -1665,8 +1751,6 @@ static uint8_t generate_world_row(uint32_t n) {
     return 1;
 }
 
-/* Rellena la cinta de scroll de 32 filas y deja la camara como al arrancar.
- *
 /* Rellena la cinta de scroll de 32 filas y deja la camara como al arrancar.
  *
  * PUENTE INICIAL: en el original la partida empieza con el avion ya pasado un
@@ -1694,6 +1778,28 @@ static void llenar_cinta_inicial(void) {
     scroll_acc   = 0;
     scroll_step  = 1;
     vid_set_scroll_y(scroll_val);
+
+    /* HUD FIJO: las filas 0..HUD_ROW_TOP-1 del tilemap son la BANDA SUPERIOR
+     * (ver vid_set_raster(HUD_RASTER_LINE0)), y esa banda no scrollea.
+     *
+     * Se dejan en AGUA (tile Y atributo) porque es lo que asoma por los huecos
+     * de los sprites y entre las piezas de la barra. El unico sitio que las
+     * vuelve a escribir es generate_world_row(), que lleva su propio forzado
+     * para cuando el scroll las reutiliza.
+     *
+     * POR QUE HACE FALTA LA BANDA: sin ella, detras del HUD se ve la fila de
+     * cinta (scroll_val + y) >> 3, o sea una fila DISTINTA en cada frame. No
+     * se puede pintar "la fila del HUD" porque no existe. */
+    {
+        uint8_t r, c;
+        for (r = 0; r < HUD_ROW_TOP; r++) {
+            uint16_t cell = (uint16_t)((uint16_t)r << 6);
+            for (c = 0; c < VC_MAP_COLS; c++, cell++) {
+                fv_cell(cell, TILE_WATER);
+                fv_attr_cell(cell, PAL_WATER);
+            }
+        }
+    }
 }
 
 /* ===========================================================================
@@ -1719,7 +1825,11 @@ static void load_patterns(void) {
 
     fv_load_bg_pattern(TILE_BRIDGE,  tile_bridge_p0,  tile_bridge_p1);
     /* TILE_TREE no se carga: nunca se pinta. */
-    fv_load_bg_pattern(TILE_ROAD,    tile_bridge_p1,  tile_road_p1);
+    /* La CALLE del puente (TILE_ROAD) usa el patron del AGUA: dos paredes a los
+     * lados de la viga con el azul del cauce en medio. El fondo del patron es el
+     * indice 3, que en PAL_EDGE es verde oscuro: por eso la calle se pinta con
+     * la paleta del AGUA y no con PAL_EDGE (ver generate_world_row). */
+    fv_load_bg_pattern(TILE_ROAD,    tile_water_p0,   tile_water_p1);
 
     fv_load_spr_pattern(SPR_PLANE_PAT, spr_plane_p0, spr_plane_p1);
     fv_load_spr_pattern(SPR_BOAT_PAT,  spr_boat_p0,  spr_boat_p1);
@@ -1800,15 +1910,15 @@ static void setup_video(void) {
     vid_pal_set_spr(SPR_PLANE_PAL, 2, VC_RGB444(0x2, 0xA, 0xE));  /* azul */
 
     /* Paleta 2. Solo el barco.
-     *   1 = negro #000000   2 = azul #0000FF   3 = rojo #BB0011 */
-    vid_pal_set_spr(SPR_BOAT_PAL,  1, VC_RGB444(0x0, 0x0, 0x0));  /* negro */
+     *   1 = negro #000000 (PRESET)   2 = azul #0000FF   3 = rojo #BB0011
+     * OJO: el color 1 de SPR_BOAT_PAL ya es negro en el preset de video.h, asi
+     * que no se reescribe (cada vid_pal_set_spr cuesta ~6 bytes de codigo). */
     vid_pal_set_spr(SPR_BOAT_PAL,  2, VC_RGB444(0x0, 0x0, 0xF));  /* azul  */
     vid_pal_set_spr(SPR_BOAT_PAL,  3, VC_RGB444(0xB, 0x0, 0x1));  /* rojo  */
 
     /* Paleta 0. Solo el helicoptero.
-     *   1 = cian #22FFFF   2 = negro #000000   3 = rojo #BB1100 */
+     *   1 = cian #22FFFF   2 = negro #000000 (PRESET)   3 = rojo #BB1100 */
     vid_pal_set_spr(SPR_HELI_PAL,  1, VC_RGB444(0x2, 0xF, 0xF));  /* cian  */
-    vid_pal_set_spr(SPR_HELI_PAL,  2, VC_RGB444(0x0, 0x0, 0x0));  /* negro */
     vid_pal_set_spr(SPR_HELI_PAL,  3, VC_RGB444(0xB, 0x1, 0x0));  /* rojo  */
 
     /* Paleta 3. Solo el bidon de combustible.
@@ -1823,10 +1933,23 @@ static void setup_video(void) {
 
     load_patterns();
 
-    /* SIN bandas de raster: todo el fondo usa el scroll global. El HUD va en
-     * sprites, asi que no necesita banda fija. */
-    vid_set_raster(0xFF, 0xFF);
-    vid_set_band2_scroll(0, 0);
+    /* BANDA SUPERIOR FIJA PARA EL HUD.
+     *
+     * El HUD son sprites, y los sprites no se pueden "subir de capa": el core
+     * dibuja como maximo 8 por linea y elige los de MENOR indice de OAM, que
+     * son los del propio HUD. El problema es el FONDO: sin banda fija, lo que
+     * se ve detras del HUD es la fila de cinta (scroll_val + y) >> 3, o sea una
+     * fila DISTINTA en cada frame. No se puede pintar "la fila del HUD": no
+     * existe.
+     *
+     * Con RASTER_LINE0 = 24 la banda superior (lineas 0..23 = filas 0..2 del
+     * tilemap) usa scroll 0 fijo, asi que esas tres filas siempre son las
+     * mismas y llenar_cinta_inicial() puede dejarlas en AGUA para siempre. La
+     * banda media (resto de la pantalla) sigue con el scroll global del rio.
+     *
+     * OJO: el corte se redondea a fila de 8 px, por eso 24 = 3 filas exactas. */
+    vid_set_raster(HUD_RASTER_LINE0, 0xFF);
+    vid_set_band2_scroll(0, 0);      /* banda del HUD: siempre en 0 */
     vid_set_band3_scroll(0, 0);
 
     /* Semilla del rio. */
@@ -1956,7 +2079,12 @@ static void draw_enemy(uint8_t i) {
     static uint8_t last_dir[NENEMIGOS];
     static uint8_t inicializado;
 
-    uint8_t spr = (i == ENEMIGO_HELI) ? SPR_HELI : SPR_BOAT;
+    /* El barco y el heli solo se diferencian en TRES datos. Se sacan UNA vez a
+     * locales y asi las ternarias aparecen una sola vez cada una (antes la de
+     * la paleta estaba repetida en las dos ramas y costaba ~40 bytes). */
+    uint8_t spr   = (uint8_t)((i == ENEMIGO_HELI) ? SPR_HELI : SPR_BOAT);
+    uint8_t pat   = (uint8_t)((i == ENEMIGO_HELI) ? SPR_HELI_PAT : SPR_BOAT_PAT);
+    uint8_t palspr = (uint8_t)((i == ENEMIGO_HELI) ? SPR_HELI_PAL : SPR_BOAT_PAL);
     uint8_t on  = ene_active[i];
     /* Los dos sprites estan dibujados mirando a la IZQUIERDA. Si el enemigo se
      * mueve hacia la derecha (dir == 0) se voltea con VC_SPR_FLIP_X. */
@@ -1978,23 +2106,18 @@ static void draw_enemy(uint8_t i) {
         return;
     }
 
+    /* Movimiento + flags: UNA sola llamada para el caso "aparece" y el
+     * "se mueve". Solo cambia si hay que reescribir tambien el patron. */
+    fv_sprite_move(spr, ene_x[i], ene_y[i],
+                   (uint8_t)(palspr | VC_SPR_SCALE2X | flip));
     if (!last_on[i]) {
-        /* Aparicion: coloca posicion, flags y patron. */
-        fv_sprite_move(spr, ene_x[i], ene_y[i],
-                       (uint8_t)(((i == ENEMIGO_HELI) ? SPR_HELI_PAL : SPR_BOAT_PAL)
-                                 | VC_SPR_SCALE2X | flip));
-        fv_oam(spr, VC_OAM_TILE,
-               (uint8_t)((i == ENEMIGO_HELI) ? SPR_HELI_PAT : SPR_BOAT_PAT));
+        fv_oam(spr, VC_OAM_TILE, pat);
     } else {
-        fv_sprite_move(spr, ene_x[i], ene_y[i],
-                       (uint8_t)(((i == ENEMIGO_HELI) ? SPR_HELI_PAL : SPR_BOAT_PAL)
-                                 | VC_SPR_SCALE2X | flip));
         /* El FLIP va en las FLAGS: si solo cambia el sentido de marcha (misma
          * posicion), sin esto el enemigo se quedaba mirando al lado contrario. */
-        fv_oam(spr, VC_OAM_FLAGS,
-               (uint8_t)(((i == ENEMIGO_HELI) ? SPR_HELI_PAL : SPR_BOAT_PAL)
-                         | VC_SPR_SCALE2X | flip));
+        fv_oam(spr, VC_OAM_FLAGS, (uint8_t)(palspr | VC_SPR_SCALE2X | flip));
     }
+
     last_on[i]  = 1;
     last_x[i]   = ene_x[i];
     last_y[i]   = ene_y[i];
@@ -2167,11 +2290,15 @@ static uint8_t celda_agua(uint8_t cinta_row, uint8_t c) {
     uint8_t l  = river_l[cinta_row];
     uint8_t r  = river_r[cinta_row];
     uint8_t il = island_l[cinta_row];
-    uint8_t ir = island_r[cinta_row];   /* borde REAL, no il + GEN_ISLAND_W - 1 */
+    uint8_t ir;
 
     /* Los bordes son tiles de ARENA, no agua: el agua va de l+1 a r-1. */
     if (c <= l || c >= r) return 0;
-    if (il != 0xFF && c >= il && c <= ir) return 0;
+    if (il != 0xFF) {
+        /* Isla: misma cuenta que al pintar (ver generate_world_row). */
+        ir = (uint8_t)(il + GEN_ISLAND_W - 1);
+        if (c >= il && c <= ir) return 0;
+    }
 
     /* PUENTE: la viga cruza el cauce entero, sin hueco. Tocar = chocar. */
     if (puente_bit[cinta_row]) return 0;
@@ -2215,15 +2342,17 @@ static void puente_flash_off(void) {
 }
 
 static void update_puente_flash(void) {
-    /* Espejo del contador en $03E1: permite MEDIR el destello desde el emulador
-     * (el color del agua no se puede leer directo y /screen.png va con retraso). */
-    *(volatile uint8_t *)0x03E1 = puente_flash;
     if (!puente_flash) return;
     if (--puente_flash) return;
     puente_flash_off();
 }
 
-/* Borra la VIGA de una fila de cinta y deja AGUA de verdad.
+/* Borra la VIGA de una fila de cinta y deja AGUA de verdad, de orilla a
+ * orilla.
+ *
+ * El alcance es el de la CALLE del puente (todo el ancho del cauce, viga
+ * incluida): la viga y la calle se pintan en las mismas filas, asi que la calle
+ * se borra igual que la viga. El color no se toca: la calle ya usa PAL_WATER.
  *
  * OJO: hay que escribir TILE **y ATRIBUTO**. fv_cell() solo escribe el tile, y
  * la viga se pinto con PAL_WOOD: si se deja el atributo, el agua sale MARRON y
@@ -2239,7 +2368,7 @@ static uint8_t puente_borrar_fila(uint8_t cr) {
     if (!puente_bit[cr]) return 0;
     puente_bit[cr] = 0;
 
-    for (col = (uint8_t)(river_l[cr] + 1); col < river_r[cr]; col++) {
+    for (col = river_l[cr]; col <= river_r[cr]; col++) {
         fv_cell((uint16_t)(cell + col), tile);
         fv_attr_cell((uint16_t)(cell + col), PAL_WATER);
     }
@@ -2420,46 +2549,32 @@ static void plane_hit(void) {
  * lado mataba al instante (el "choque con algo invisible" del arranque). Ahora
  * se usa FILA_CINTA(plane_y), la misma cuenta que hace la colision. */
 static void plane_place_safe(void) {
-    uint8_t k, dy;
+    uint8_t k;
     uint8_t mejor = 0xFF;
     uint8_t mejor_dist = 0xFF;
     uint8_t centro = (uint8_t)((GEN_ZONE_L + GEN_ZONE_R + 1) / 2);
-    uint8_t fallo = 0xFF;
 
     plane_y = PLANE_Y;
 
-    /* Un candidato es valido solo si TODAS las celdas del dibujo (las mismas
-     * que mira plane_on_bank, recortadas por PLANE_HIT_INSET) son agua en
-     * TODAS las filas de cinta que ocupa el sprite. Comprobar una sola fila
-     * deja el sprite a caballo de la orilla cuando la costa cambia de fila. */
+    /* Un candidato es valido si TODAS las celdas que ocupa el dibujo son agua
+     * en TODAS las filas de cinta del sprite: exactamente lo que pregunta
+     * sprite_cabe(), que ya es la fuente de verdad para enemigos y bidones.
+     * (Antes habia aqui una copia del bucle, con su propio recorte de 1 px.) */
     for (k = GEN_ZONE_L; k + 1 <= GEN_ZONE_R; k++) {
         uint16_t x = (uint16_t)((uint16_t)k * 8 + 8) - (PLANE_W / 2);
-        uint8_t cabe = 1;
         uint8_t dist;
 
         if (x < PLANE_MIN_X || x > PLANE_MAX_X) continue;
-        for (dy = PLANE_HIT_INSET; dy < PLANE_H - PLANE_HIT_INSET && cabe; dy++) {
-            uint8_t r = FILA_CINTA((uint8_t)(plane_y + dy));
-            uint8_t c0 = (uint8_t)((x + PLANE_HIT_INSET) >> 3);
-            uint8_t c1 = (uint8_t)((x + PLANE_W - PLANE_HIT_INSET - 1) >> 3);
-            uint8_t c;
-            for (c = c0; c <= c1; c++) {
-                if (!celda_agua(r, c)) { cabe = 0; break; }
-            }
-        }
-        if (!cabe) continue;
-        if (fallo == 0xFF) fallo = (uint8_t)k;
+        if (!sprite_cabe(x, plane_y)) continue;
         dist = (uint8_t)((k > centro) ? (k - centro) : (centro - k));
         if (dist < mejor_dist) { mejor_dist = dist; mejor = (uint8_t)k; }
     }
 
     if (mejor != 0xFF) {
         plane_x = (uint8_t)((uint8_t)(mejor * 8 + 8) - (PLANE_W / 2));
-    } else if (fallo != 0xFF) {
-        plane_x = (uint8_t)((uint8_t)(fallo * 8 + 8) - (PLANE_W / 2));
     } else {
-        /* Nada cabe (embudo junto al puente): al centro del agua de la fila
-         * central. Es preferible a dejarlo clavado contra la orilla. */
+        /* Nada cabe (embudo junto al puente): al primer trozo de agua de la
+         * fila del avion. Es preferible a dejarlo clavado contra la orilla. */
         for (k = GEN_ZONE_L; k <= GEN_ZONE_R; k++) {
             if (celda_agua(FILA_CINTA(plane_y), k)) {
                 plane_x = (uint8_t)(k * 8 - 4);
@@ -2745,6 +2860,28 @@ static uint8_t reubicar_al_agua(uint8_t *x, uint8_t y) {
     return 1;
 }
 
+/* Coloca un SPRITE DE 16x16 (enemigo o bidon) en una posicion valida de la
+ * fila de entrada (y = 0) y devuelve su X, o 0xFF si no hay agua donde ponerlo.
+ *
+ * Lo comparten barco, helicoptero y bidon: antes cada uno tenia su copia de
+ * "si no esta libre espera y reintenta" y "busca columna al azar". El que nace
+ * se identifica con `i` (0, 1 o NENEMIGOS para el bidon) para que no se
+ * compare consigo mismo en enemigo_libre().
+ *
+ * Si no cabe ahora, actualiza `*next` para reintentar unos frames despues y
+ * devuelve 0xFF. */
+static uint8_t colocar_sprite_nuevo(uint8_t i, uint32_t *next) {
+    uint8_t x;
+
+    if (!enemigo_libre(i, 0)) { *next = world_row + 2; return 0xFF; }
+    x = columna_libre();
+    if (x == 0xFF) { *next = world_row + 4; return 0xFF; }
+    return x;
+}
+
+/* Red de seguridad de la declaracion: colocar_sprite_nuevo() esta definida
+ * justo arriba, pero update_fuel() la usa mas abajo y cc65 necesita verla
+ * antes si algun dia se reordena el archivo. */
 static void update_enemy(uint8_t i) {
     if (ene_active[i]) {
         ene_y[i] = (uint8_t)(ene_y[i] + scroll_step);
@@ -2764,9 +2901,32 @@ static void update_enemy(uint8_t i) {
          * ganaba al rebote: el sprite de 16 px casi nunca cae en columnas
          * exactas de 8, asi que el "objetivo" oscilaba entre la celda de la
          * izquierda y la de la derecha y el enemigo se movia solo, sin llegar
-         * nunca a la orilla (medido: 0 rebotes en 600 frames, 23 saltos). */
-        if (!sprite_cabe(ene_x[i], ene_y[i]) &&
-            !reubicar_al_agua(&ene_x[i], ene_y[i])) { ene_active[i] = 0; return; }
+         * nunca a la orilla (medido: 0 rebotes en 600 frames, 23 saltos).
+         *
+         * OJO CON EL NIVEL: si la cadencia de deriva es 0, el enemigo tiene que
+         * quedarse CLAVADO en su columna. Antes esta reubicacion lo arrastraba
+         * 1 px por frame cada vez que el cauce se estrechaba, y el jugador veia
+         * moverse a unos enemigos que deberian estar quietos. Ahora, si esta
+         * quieto y el cauce le quita el agua, DESAPARECE: es preferible a
+         * romper la regla del nivel. */
+        if (!sprite_cabe(ene_x[i], ene_y[i])) {
+            /* Si el nivel pide enemigo QUIETO (cadencia 0), no se desliza: se
+             * retira. Si no, se empuja 1 px/frame hacia el agua mas cercana.
+             *
+             * OJO: esto SE MIDE, no se supone. Con el sprite de 16 px a caballo
+             * de dos celdas, reubicar_al_agua() puede encontrar el agua UNA CELDA
+             * al lado y el primer paso ya son 8 px, no 1: el jugador ve al barco
+             * cambiar de columna en un frame aunque la tabla diga "quieto". Por
+             * eso un enemigo quieto que queda sin agua se retira en el acto. */
+            if (!nivel_val(i == ENEMIGO_HELI ? PROG_HELI : PROG_BARCO)) {
+                ene_active[i] = 0;
+                return;
+            }
+            if (!reubicar_al_agua(&ene_x[i], ene_y[i])) {
+                ene_active[i] = 0;
+                return;
+            }
+        }
 
         /* Deriva lateral con rebote: 1 px cada N frames, con N segun el nivel
          * (prog_tab). N = 0 -> el enemigo NO se mueve de lado: sigue bajando
@@ -2804,12 +2964,10 @@ static void update_enemy(uint8_t i) {
 
     /* Nace en y=0 solo si el otro no esta a esa altura (nunca a la misma
      * altura). Si no, reintenta unos frames despues. */
-    if (!enemigo_libre(i, 0)) { ene_next[i] = world_row + 2; return; }
-
     {
         /* Nace SIEMPRE en agua navegable de la fila por la que entra. */
-        uint8_t x = columna_libre();
-        if (x == 0xFF) { ene_next[i] = world_row + 4; return; }
+        uint8_t x = colocar_sprite_nuevo(i, &ene_next[i]);
+        if (x == 0xFF) return;
         ene_x[i] = x;
         ene_dir[i] = (uint8_t)(rng_next() & 1);
         ene_y[i] = 0;
@@ -2857,10 +3015,8 @@ static void update_fuel(void) {
         /* Aparece en AGUA navegable de la fila por la que entra, y NUNCA a la
          * altura de un enemigo. Si coincide, se espera un poco: antes el bidon
          * podia nacer encima de un barco y se confundian. */
-        if (!enemigo_libre(NENEMIGOS, 0)) { fuel_next = world_row + 2; return; }
-
-        x = columna_libre();
-        if (x == 0xFF) { fuel_next = world_row + 4; return; }
+        x = colocar_sprite_nuevo(NENEMIGOS, &fuel_next);
+        if (x == 0xFF) return;
         fuel_x = x;
         fuel_y = 0;
         fuel_active = 1;

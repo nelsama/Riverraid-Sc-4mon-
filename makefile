@@ -33,6 +33,11 @@ OUTPUT_DIR = output
 LD_CONFIG = $(ROOT)/config/programa.cfg
 LIB       = $(ROOT)/lib/vc.lib
 
+# Listado del ensamblador de game.c. Varios scripts de tools/ leen de aqui las
+# direcciones de las variables de RAM: si el .lst no se regenera con el .o, da
+# direcciones VIEJAS y las medidas son basura (parece que el barco se mueve
+# cuando no). Por eso se genera SIEMPRE junto con game.o.
+
 PROGRAM_NAME = game
 PROGRAM = $(OUTPUT_DIR)/$(PROGRAM_NAME).bin
 MAP_FILE = $(OUTPUT_DIR)/$(PROGRAM_NAME).map
@@ -77,7 +82,7 @@ $(BUILD_DIR)/dirs-stamp:
 	@touch $@
 
 $(BUILD_DIR)/game.o: $(BUILD_DIR)/dirs-stamp game.c include/video.h include/fastvideo.h include/romapi.h include/fastsound.h include/joy.h include/perf.h
-	$(CC) -c $(CFLAGS) -o $@ game.c
+	$(CC) -c $(CFLAGS) -l $(BUILD_DIR)/game.lst -o $@ game.c
 
 $(BUILD_DIR)/perf.o: $(BUILD_DIR)/dirs-stamp perf.c include/perf.h include/romapi.h
 	$(CC) -c $(CFLAGS) -o $@ perf.c
@@ -89,7 +94,7 @@ $(BUILD_DIR)/joy.o: $(BUILD_DIR)/dirs-stamp joy.c include/joy.h
 	$(CC) -c $(CFLAGS) -o $@ joy.c
 
 $(BUILD_DIR)/startup.o: $(BUILD_DIR)/dirs-stamp $(APP_ASM)
-	$(CA65) $(ASFLAGS) -o $@ $<
+	$(CA65) $(ASFLAGS) -o $@ $(APP_ASM)
 
 $(PROGRAM): $(BUILD_DIR)/dirs-stamp $(APP_OBJECTS) $(LIB)
 	$(LD) $(LDFLAGS) -o $@ $(APP_OBJECTS) $(LIB) $(CC65_HOME)/lib/none.lib

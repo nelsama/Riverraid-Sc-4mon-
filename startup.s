@@ -10,6 +10,13 @@
 
 .import _main
 .import __BSS_RUN__, __BSS_SIZE__
+; Tope del stack SOFTWARE de cc65. Sale del linker (__STACKSTART__ de
+; config/programa.cfg) y NO se escribe a mano: cuando estaba hardcodeado en
+; $3DFF y BSS crecio hasta $3DFE, la pila empezo a empujar justo encima de las
+; ultimas variables (gen_sector, cp_*, hud_last_*). El juego "se movia solo":
+; enemigos con deriva cuando la tabla decia quietos y choques contra algo
+; invisible. Con el simbolo, cualquier cambio de tamano de BSS lo sigue.
+.import __STACKSTART__
 .importzp c_sp
 
 ; Variables temporales en zero page
@@ -29,11 +36,11 @@ _init:
     ldx #$FF
     txs
 
-    ; Inicializar stack pointer de CC65 (software stack)
-    ; Usar $3DFF como tope del stack
-    lda #<$3DFF
+    ; Inicializar stack pointer de CC65 (software stack): arranca en el tope
+    ; del area de stack, o sea justo por encima del final de BSS.
+    lda #<__STACKSTART__
     sta c_sp
-    lda #>$3DFF
+    lda #>__STACKSTART__
     sta c_sp+1
 
     ; Inicializar BSS a ceros

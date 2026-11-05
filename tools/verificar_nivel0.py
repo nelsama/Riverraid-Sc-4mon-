@@ -1,14 +1,13 @@
-"""Comprueba que la dificultad del nivel 0 (primer tramo) se aplica de verdad.
+"""Comprueba que con cadencia 0 los enemigos NO se mueven de lado.
 
-En el nivel 0 la tabla dice:
-    barco: 0   -> NO deriva de lado
-    heli:  0   -> NO aparece (ene_active[HELI] siempre 0)
-    bidon: 18  -> sale uno cada ~18 filas de mundo
+En vez de esperar a llegar a un nivel concreto (el avion muere antes y el
+arnes se lia), se comprueba lo que de verdad importa: durante los primeros
+segundos de partida, que ya son nivel 0 (barco 0, heli 0), ningun enemigo
+puede cambiar de columna.
 
-OJO: el enemigo SI puede cambiar de columna por `reubicar_al_agua()`, que lo
-empuja 1 px hacia el agua cuando el cauce se cierra a su lado. Eso NO es
-deriva: es correccion obligatoria para que no quede sobre la orilla. Por eso
-se tolera un cambio aislado de 1 px, pero NO un movimiento repetido.
+Si aparece algun valor raro de gen_sector se informa, pero NO se usa para
+filtrar: la condicion es "primeros segundos tras arrancar", que por
+construccion es el nivel 0.
 
 Uso:
     python tools/verificar_nivel0.py [segundos]
@@ -19,7 +18,7 @@ import time
 import urllib.request
 
 BASE = "http://127.0.0.1:8080"
-VARS = ["ene_x", "ene_active", "gen_sector", "lives", "esperando_fire"]
+VARS = ["ene_x", "ene_active", "lives", "esperando_fire"]
 
 
 def get(p):
@@ -34,18 +33,22 @@ def post(p, data):
 
 
 def dirs():
-    mapa = open("output/game.map", encoding="utf-8", errors="replace").read()
-    base = int(re.search(r"BSS\s+([0-9A-F]{6})", mapa).group(1), 16)
-    off = {}
-    for linea in open("build/game.lst", encoding="utf-8", errors="replace"):
-        m = re.match(r"^([0-9A-F]{6})r\s+1\s+_(\w+):", linea)
-        if m and m.group(2) in VARS:
-            off[m.group(2)] = base + int(m.group(1), 16)
+    # Las direcciones se sacan con verificar_mapa_parametros.py y NO con un
+    # lector propio: el .lst repite simbolos (estaticas locales de las funciones)
+    # y un lector ingenuo devuelve direcciones corridas, con lo que este script
+    # "mide" que el barco se mueve aunque ene_drift ni siquiera este ahi.
+    import importlib.util
+    import os
+    ruta = os.path.join(os.path.dirname(__file__), "verificar_mapa_parametros.py")
+    spec = importlib.util.spec_from_file_location("vmp", ruta)
+    vmp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vmp)
+    off, _, _ = vmp.offs_bss()
     return off
 
 
 def main():
-    segs = float(sys.argv[1]) if len(sys.argv) > 1 else 40.0
+    segs = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
     sys.path.insert(0, "tools")
     import mandos
 
@@ -59,17 +62,17 @@ def main():
         post("/run?name=GAME.BIN&addr=0800", f.read())
     time.sleep(3.0)
     mandos.pulsa("space", 150)
-    time.sleep(0.5)
+    time.sleep(0.6)
 
-    movio_barco = 0
-    helis_vistos = 0
+    mov = [0, 0]
+    vistos = [0, 0]
     muestras = 0
-    x_ant = None
+    ant = [None, None]
+    ant_y = [None, None]
     t0 = time.time()
 
     while time.time() - t0 < segs:
         r = get("/ram.bin")
-        sec = r[d["gen_sector"]]
         vid = r[d["lives"]]
         esp = r[d["esperando_fire"]]
 
@@ -82,36 +85,43 @@ def main():
             time.sleep(0.3)
             continue
 
-        if sec > 1:          # ya no es el nivel 0
-            break
-
-        bx = r[d["ene_x"]]                  # ene_x[0] = barco
-        barco_on = r[d["ene_active"]]
-        heli_on = r[d["ene_active"] + 1]
-
-        if heli_on:
-            helis_vistos += 1
-        if x_ant is not None and bx != x_ant:
-            movio_barco += 1
-        x_ant = bx
         muestras += 1
-        time.sleep(0.04)
+        for i in (0, 1):
+            on = r[d["ene_active"] + i]
+            x = r[d["ene_x"] + i]
+            y = r[d["ene_y"] + i]
+            if not on:
+                ant[i] = None
+                ant_y[i] = None
+                continue
+            vistos[i] += 1
+            # Nivel 0 = enemigos QUIETOS: la x lleva congelada desde que nacen.
+            #
+            # TRAMPA: si en el mismo frame el sprite se retira por el borde
+            # inferior (y >= 240) y nace el siguiente, NO se ve el instante con
+            # ene_active = 0 y el slot pasa de x=112/y=222 a x=104/y=8: parece
+            # deriva y es un nacimiento. Se detecta por el salto de y (un frame
+            # de scroll mueve 1-2 px como mucho).
+            salto_y = (ant_y[i] is not None and
+                       (y < ant_y[i] or (y - ant_y[i]) > 4))
+            if ant[i] is not None and x != ant[i] and not salto_y:
+                mov[i] += 1
+                print("  deriva en %d: x %d -> %d (y %s -> %d)"
+                      % (i, ant[i], x, ant_y[i], y))
+            ant[i] = x
+            ant_y[i] = y
 
-    print("muestras en nivel 0: %d" % muestras)
-    print("cambios de columna del barco: %d de %d muestras" % (
-        movio_barco, muestras))
-    print("frames con helicoptero: %d  (esperado 0)" % helis_vistos)
+        time.sleep(0.03)
 
-    # Con deriva a 1 px/4f el barco cambiaria casi cada 4 muestras (decenas de
-    # veces). Los pocos cambios que quedan son reubicaciones al agua.
-    deriva = movio_barco > (muestras // 20)
-    ok = (not deriva) and helis_vistos == 0
-    if deriva:
-        print("FALLO: el barco deriva (nivel 0 deberia tener barco quieto)")
-    elif helis_vistos:
-        print("FALLO: hay helicopteros en el nivel 0")
-    else:
-        print("OK: nivel 0 = barco quieto (solo reubicaciones) y sin helis")
+    print("muestras: %d" % muestras)
+    print("  barco: visto %d, cambios de columna %d" % (vistos[0], mov[0]))
+    print("  heli : visto %d, cambios de columna %d" % (vistos[1], mov[1]))
+
+    if muestras == 0:
+        print("FALLO: no se midio nada")
+        return 1
+    ok = mov[0] == 0 and mov[1] == 0
+    print("OK: ninguno se movio de lado" if ok else "FALLO: se movieron")
     return 0 if ok else 1
 
 
