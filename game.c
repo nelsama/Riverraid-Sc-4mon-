@@ -2335,6 +2335,32 @@ static uint8_t puente_borrar_fila(uint8_t cr) {
     return 1;
 }
 
+/* Destruye la viga ENTERA del puente, sea cual sea la fila por la que se
+ * entre. Devuelve 1 si habia viga.
+ *
+ * La viga son BRIDGE_ROWS filas de cinta contiguas, pero NO se puede suponer
+ * que caigan dentro de un margen fijo alrededor de la fila de impacto:
+ *
+ *   - el sprite del avion ocupa 2-3 filas y la viga 3, asi que chocando por el
+ *     borde quedaba siempre la fila de abajo sin borrar (una FRANJA DE TILES de
+ *     madera bajo el puente);
+ *   - la viga puede cruzar el final del tilemap (filas 30, 31, 0), y ahi
+ *     cualquier resta con envoltura se queda corta.
+ *
+ * Se barren las 32 filas: puente_bit[] es un byte por fila y
+ * puente_borrar_fila() sale en el acto si la fila no es de puente, asi que el
+ * coste es despreciable y no quedan casos raros. Lo usan TANTO el choque como
+ * el disparo, para que no se desincronicen. */
+static uint8_t puente_borrar_entero(void) {
+    uint8_t cr;
+    uint8_t habia = 0;
+
+    for (cr = 0; cr < VC_MAP_ROWS; cr++) {
+        habia |= puente_borrar_fila(cr);
+    }
+    return habia;
+}
+
 /* Destruye el PUENTE que hay debajo del avion.
  *
  * Se llama al chocar con la viga: en el original, si llegas al puente sin
@@ -2342,28 +2368,11 @@ static uint8_t puente_borrar_fila(uint8_t cr) {
  * porque esa funcion restaura el checkpoint y volveria a poner el puente.
  *
  * OJO: esta funcion se llama en TODO choque contra orilla o isla, no solo
- * contra el puente. El destello solo se enciende si de verdad habia viga
+ * contra la viga. El destello solo se enciende si de verdad habia puente
  * debajo; si no, el agua parpadeaba al morir contra el cesped y parecia un
  * "puente invisible". */
 static void puente_destruir_bajo_avion(void) {
-    uint8_t cr;
-    uint8_t habia = 0;
-
-    /* SE BARRE LA VIGA ENTERA, no solo las filas que toca el avion.
-     *
-     * La viga son BRIDGE_ROWS filas de cinta contiguas y PUEDE cruzar el final
-     * del tilemap (p. ej. 30, 31, 0): el avion choca por una de ellas y un
-     * margen fijo alrededor de esa fila no llega al resto. Resultado: se
-     * quedaba una astilla de madera de una o dos filas (visto en el emulador:
-     * tras el choque seguian intactas las filas 0, 1, 30 y 31).
-     *
-     * Barrer las 32 filas cuesta poquisimo (puente_bit[fila] es un byte y
-     * puente_borrar_fila() sale en el acto si no es de puente) y no tiene
-     * casos raros: si habia viga, desaparece entera. */
-    for (cr = 0; cr < VC_MAP_ROWS; cr++) {
-        habia |= puente_borrar_fila(cr);
-    }
-    if (!habia) return;
+    if (!puente_borrar_entero()) return;
 
     puente_flash = PUENTE_FLASH_FRAMES;
     puente_flash_on();
@@ -2377,21 +2386,15 @@ static void puente_destruir_bajo_avion(void) {
 static uint8_t puente_toca_bala(uint8_t i) {
     uint8_t cr = FILA_CINTA(bullet_y[i]);
     uint8_t c  = (uint8_t)(BULLET_HIT_X(i) >> 3);
-    uint8_t k;
 
     if (!puente_bit[cr]) return 0;
     /* Solo si la bala cae sobre el cauce (la calle de los lados es terreno). */
     if (c <= river_l[cr] || c >= river_r[cr]) return 0;
 
-    /* La viga son BRIDGE_ROWS filas CONTIGUAS. Se recorren las que van de
-     * cr-(BRIDGE_ROWS-1) a cr+(BRIDGE_ROWS-1) para cubrirla entre por donde
-     * entre la bala, y puente_borrar_fila() ignora las que no son puente. */
-    {
-        uint8_t f0 = (uint8_t)((cr - (BRIDGE_ROWS - 1)) & (VC_MAP_ROWS - 1));
-        for (k = 0; k < (2 * BRIDGE_ROWS - 1); k++) {
-            puente_borrar_fila((uint8_t)((f0 + k) & (VC_MAP_ROWS - 1)));
-        }
-    }
+    /* Se lleva la viga ENTERA con la MISMA funcion que el choque, para que las
+     * dos rutas no se puedan desincronizar (antes esta usaba un margen fijo de
+     * BRIDGE_ROWS filas alrededor del impacto, y el choque otro distinto). */
+    (void)puente_borrar_entero();
 
     puente_flash = PUENTE_FLASH_FRAMES;
     puente_flash_on();
