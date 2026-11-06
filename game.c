@@ -569,12 +569,21 @@ static const uint8_t tile_grass_p1[8] = { 0x00,0x10,0x00,0x00,0x08,0x00,0x00,0x0
  *
  * (E() de arriba queda para quien quiera calcular a mano: indice = (p1<<1)|p0) */
 /* ORILLA IZQUIERDA: cesped a la izq, agua en la columna 7, arena en medio.
- * El borde cesped/arena avanza 1 px por fila (3,4,5,6,7...): diagonal real. */
-static const uint8_t tile_edge_l0_p0[8] = { 0xE0, 0xF0, 0xF8, 0xFC, 0xFE, 0xFE, 0xFE, 0xFE };
-static const uint8_t tile_edge_l0_p1[8] = { 0x1E, 0x0E, 0x06, 0x02, 0x00, 0x00, 0x00, 0x00 };
-/* ORILLA DERECHA: espejo exacto del anterior (agua en la columna 0). */
-static const uint8_t tile_edge_r0_p0[8] = { 0x07, 0x0F, 0x1F, 0x3F, 0x7F, 0x7F, 0x7F, 0x7F };
-static const uint8_t tile_edge_r0_p1[8] = { 0x78, 0x70, 0x60, 0x40, 0x00, 0x00, 0x00, 0x00 };
+ *
+ * OJO CON LA DIAGONAL: NO va dentro del tile. Cada fila de cinta pinta el
+ * MISMO patron, asi que una diagonal de 8 px se reinicia en cada tile y la
+ * orilla sale como una sierra de triangulos repetidos (visto en el emulador).
+ *
+ * La inclinacion la da el ESCALON entre filas del cauce (gen_left cambia de
+ * 1 en 1 celda), no el dibujo del tile. Por eso aqui el borde es RECTO:
+ * columnas 0-4 cesped, 5-6 arena, 7 agua, igual en las 8 filas. Asi, cuando la
+ * fila de al lado tiene el cauce una celda mas a la derecha, el escalon es de 8
+ * px limpios y la orilla se lee como una linea continua. */
+static const uint8_t tile_edge_l0_p0[8] = { 0xF8, 0xF8, 0xF8, 0xF8, 0xF8, 0xF8, 0xF8, 0xF8 };
+static const uint8_t tile_edge_l0_p1[8] = { 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06 };
+/* ORILLA DERECHA: espejo exacto (agua en la columna 0). */
+static const uint8_t tile_edge_r0_p0[8] = { 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F };
+static const uint8_t tile_edge_r0_p1[8] = { 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60 };
 /* --- FIN ORILLA --- */
 
 /* Arbol/vegetacion para el interior del islote. La forma debe seguir el
