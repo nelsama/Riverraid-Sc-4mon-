@@ -120,11 +120,11 @@ static uint8_t  scroll_step;
  * ningun objeto del juego lo tape: antes el bidon (4) y la explosion (5)
  * pasaban por delante de la barra de combustible y de los digitos.
  *
- *   0-3    puntos  4-8 barra  9-10 vidas
- *   11 avion  12 explosion  13 heli/barco  14-15 balas  16 bidon
+ *   0-4    puntos  5-9 barra  10-11 vidas
+ *   12 avion  13 explosion  14 barco  15 heli  17 bidon  20-21 balas
  *
  * OJO: al mover slots hay que revisar tambien el comentario de SPR_HUD_BASE. */
-#define SPR_FUEL       16
+#define SPR_FUEL       17
 #define SPR_FUEL_PAT   15
 #define SPR_FUEL_PAL   VC_SPPAL_3
 
@@ -137,14 +137,22 @@ static uint8_t  scroll_step;
  * Rango de patrones: 42..51, por debajo de 64 y sin tocar 0..2 (los pisa la
  * fase 3 del init) ni 12..15 (objetos del juego). */
 #define HUD_SCALE      0
-/* Slots de OAM. Solo hay 32 y el HUD ocupa 14 (4 puntos + 8 barra + icono y
- * numero de vidas). El resto: 0 avion, 5 explosion, 6 heli, 8 barco, 30-31
- * balas. MOVIMIENTO: si el HUD se lleva 14 slots no queda margen para enemigos
- * extra; para ampliar el juego hay que soltar algun sprite o pasar el HUD a
- * tiles con split de raster. */
-#define SPR_HUD_BASE   0       /* puntos: 0..3                       */
-#define SPR_HUD_FUEL   4       /* barra: 4..8                        */
-#define SPR_HUD_LIVES  9       /* icono de vida (9) y numero (10)    */
+/* DIGITOS DEL MARCADOR: 5. Antes eran 4 y el marcador se calculaba con
+ * `score % 10000`, asi que al pasar de 9999 VOLVIA A 0 en mitad de la partida.
+ * El score es uint16_t, o sea que llega a 65535: con 5 digitos se ve entero
+ * hasta 99999.
+ *
+ * OJO CON EL LIMITE DE 8 SPRITES POR LINEA: 5 digitos + icono de vida = 6 en
+ * la fila 1, y 5 de barra + numero de vidas = 6 en la fila 2. Los slots de OAM
+ * son 0..4 (digitos), 5..9 (barra) y 10..11 (vidas), o sea hasta el 11.
+ * El avion usa el 12 para no solaparse. */
+#define HUD_SCORE_DIGITS 5
+
+/* Slots de OAM del HUD. Van los PRIMEROS a proposito: el core dibuja el sprite
+ * de MENOR indice por encima, y son los que nunca deben quedar tapados. */
+#define SPR_HUD_BASE   0       /* puntos: 0..4 (5 digitos)           */
+#define SPR_HUD_FUEL   5       /* barra: 5..9                        */
+#define SPR_HUD_LIVES  10      /* icono de vida (10) y numero (11)   */
 /* Y=10: la fila 1 del tilemap (pixeles 8..15). La fila 0 (0..7) la recorta
  * el overscan de muchos monitores (manual del core, 1.9 y 5): con Y=2 el HUD
  * quedaba medio fuera de pantalla. Aqui sobra 2 px de margen por arriba. */
@@ -241,9 +249,9 @@ static uint8_t  scroll_step;
  * SPRITES
  * ===========================================================================
  * PRIORIDAD (el menor indice se dibuja ENCIMA):
- *   0-10  HUD      11  avion      12  explosion
- *   13    barco    14  helicoptero    15 (libre)
- *   16    bidon    17-18 balas
+ *   0-11  HUD      12  avion      13  explosion
+ *   14    barco    15  helicoptero
+ *   17    bidon    20-21 balas
  * Asi el HUD queda siempre visible y el avion pasa por delante del enemigo,
  * de las balas y del bidon.
  * NOTA: el HUD NO puede ir en el tilemap, porque la banda media de scroll
@@ -263,15 +271,17 @@ static uint8_t  scroll_step;
  * Rango disponible: 3..63. Las fases 2 y 4 escriben en pat_arr (fondo), no en
  * spr_arr, asi que los patrones de sprite 32..63 NO se tocan.
  * Ver doc/PATRONES-SPRITE-CAUSA.md. */
-#define SPR_PLANE      11    /* sprite unico del avion (escala 2x) */
+#define SPR_PLANE      12    /* sprite unico del avion (escala 2x)
+                              * Menor que enemigos y objetos, para dibujarse
+                              * por encima (el menor indice gana). */
 #define SPR_PLANE_PAT  12
-#define SPR_BOAT       13
+#define SPR_BOAT       14
 #define SPR_BOAT_PAT   13
-#define SPR_HELI       14    /* slot PROPIO: antes compartia el 13 con el
+#define SPR_HELI       15    /* slot PROPIO: antes compartia el 13 con el
                               * barco y solo podia haber un enemigo. */
 #define SPR_HELI_PAT   9
-#define SPR_BULLET     19    /* 19 y 20 (pool de 2 balas). Tiene que quedar
-                              * FUERA de 16 (bidon) y de 13/14 (enemigos):
+#define SPR_BULLET     20    /* 20 y 21 (pool de 2 balas). Tiene que quedar
+                              * FUERA de 17 (bidon) y de 14/15 (enemigos):
                               * draw_fuel() y draw_enemy() no reescriben el
                               * TILE en cada frame, asi que si otro objeto
                               * comparte slot le deja su patron. */
@@ -295,7 +305,7 @@ static uint8_t  scroll_step;
 #define BULLET_W       4
 #define BULLET_H       6
 #define BULLET_HIT_X(i) ((uint8_t)(bullet_x[i] + BULLET_OFF_X - BULLET_INSET))
-#define SPR_BOOM       12
+#define SPR_BOOM       13
 /* OJO: los 3 patrones de la explosion tienen que caer en indices LIBRES.
  * Antes eran 10, 11 y 12, y el 12 es SPR_PLANE_PAT: el tercer frame del fuego
  * machacaba el dibujo del avion y en vuelo normal se veia un anillo blanco en
@@ -825,14 +835,14 @@ static void read_input(void) {
  * ha CAMBIADO: la posicion se fija una vez (hud_setup) y aqui solo se escribe
  * el patron de los digitos y de la barra cuando su valor cambia.
  */
-static uint8_t  hud_last_digit[4];
+static uint8_t  hud_last_digit[HUD_SCORE_DIGITS];
 static uint8_t  hud_last_slot_on[HUD_FUEL_W];  /* estado de cada pieza de la barra */
 static uint8_t  hud_last_lives = 0xFF;
 
 /* Fija posicion y paleta de todos los sprites del HUD (una sola vez). */
 static void hud_setup(void) {
     uint8_t i;
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < HUD_SCORE_DIGITS; i++)
         fv_sprite_move((uint8_t)(SPR_HUD_BASE + i), (uint16_t)(HUD_SCORE_X + i * 8),
                        HUD_Y, VC_SPPAL_1 | HUD_SCALE);
     for (i = 0; i < HUD_FUEL_W; i++)
@@ -855,21 +865,26 @@ static void hud_setup(void) {
      * ~99 bytes y dejaban el stack a cero de margen. */
     for (i = 0; i <= SPR_HUD_LIVES + 1; i++)
         fv_oam(i, VC_OAM_COLL, 0);
-    hud_last_digit[0] = hud_last_digit[1] = hud_last_digit[2] = hud_last_digit[3] = 0xFF;
+    for (i = 0; i < HUD_SCORE_DIGITS; i++)
+        hud_last_digit[i] = 0xFF;
     hud_last_lives = 0xFF;
 }
 
 /* Dibuja el HUD completo en sprites (solo lo que cambia). */
 static void hud_draw(void) {
     uint8_t i;
-    uint16_t v = (uint16_t)(score % 10000u);
+    /* OJO: SIN modulo. Antes era `score % 10000` y el marcador volvia a 0 al
+     * pasar de 9999. El score es uint16_t (max 65535) y con 5 digitos cabe
+     * entero. */
+    uint16_t v = score;
 
-    /* Puntos: 4 digitos, de izquierda a derecha. */
-    for (i = 0; i < 4; i++) {
-        uint8_t div = 1;
+    /* Puntos: HUD_SCORE_DIGITS digitos, de izquierda a derecha. */
+    for (i = 0; i < HUD_SCORE_DIGITS; i++) {
+        uint16_t div = 1;
         uint8_t k;
         uint8_t d;
-        for (k = (uint8_t)(3 - i); k; k--) div = (uint8_t)(div * 10);
+        for (k = (uint8_t)(HUD_SCORE_DIGITS - 1 - i); k; k--)
+            div = (uint16_t)(div * 10);
         d = (uint8_t)((v / div) % 10u);
         if (d != hud_last_digit[i]) {
             hud_last_digit[i] = d;
