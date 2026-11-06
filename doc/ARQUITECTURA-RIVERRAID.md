@@ -304,6 +304,86 @@ fase 2, tras validar el scroll.)*
 
 ---
 
+## 7.1 El HUD
+
+El marcador **no va en el tilemap: son sprites**. Asi el scroll del rio no
+puede arrastrarlo y no hay que reservar filas fijas del mapa para el.
+
+### Reparto en pantalla
+
+```
+fila 1 (Y = 10)   [ puntos x4 ]  [ icono de vida ]        = 5 sprites
+fila 2 (Y = 19)   [ barra x5  ]  [ numero de vidas ]      = 6 sprites
+```
+
+|campo | constante | valor |
+|---|---|---|
+| puntos | `HUD_SCORE_X` | 24 (4 digitos de 8 px) |
+| barra | `HUD_FUEL_X` | 24, paso `HUD_FUEL_STEP` = 9 px |
+| vidas | `HUD_LIVES_X` / `HUD_LIVESNUM_X` | 72 (icono y numero en la misma columna) |
+| alto fila 1 | `HUD_Y` | 10 |
+| alto fila 2 | `HUD_Y2` | 19 |
+
+Los sprites del HUD van **sin escala** (`HUD_SCALE` = 0): 8x8 cada uno. Por eso
+la barra usa un paso de 9 px (7 de relleno + 2 de separacion) en vez de
+tocarse.
+
+### Por que no lo tapa nada
+
+Hay que distinguir dos límites que se confunden facilmente:
+
+**1. Sprites: 8 por linea, y el MENOR indice de OAM gana.** El core guarda en su
+line buffer los 8 sprites de menor indice que cruzan una linea y **descarta el
+resto**, ademas de encender el flag `OVERFLOW`. El HUD ocupa los slots **0-10**
+y los objetos del juego del **11 en adelante**, asi que en las lineas del HUD
+siempre se dibuja el HUD primero. Con 5 y 6 sprites por fila queda margen.
+
+> ⚠️ Los 8 sprites por linea son un límite **duro del bitstream** (GW1NR-9 al
+> ~98 % de CLS), no una decision del juego. Ver el manual del core, §6.
+
+**2. El fondo NO se puede fijar.** Detras del HUD se ve la fila de cinta
+`(scroll_val + y) >> 3`, que **cambia en cada frame** porque el mapa de 64x32
+va rotando. No existe "la fila del HUD" en el tilemap.
+
+Se intento resolver con una **banda de raster** (corte en la linea 24, scroll 0
+arriba). **No funciona con este core:** las tres bandas comparten el MISMO
+tilemap y solo cambia el origen de scroll, asi que lo que se pintaba en las
+filas 0-2 aparecia tambien como franjas sueltas en medio del rio y partia los
+puentes. Para tener fondo propio arriba habria que sacar esas filas de la
+cinta (29 filas rodantes) y tocar toda la aritmetica de indices de collision.
+
+**Estado actual:** el HUD se dibuja sobre el rio, como en el arcade.
+
+### Actualizacion: solo lo que cambia
+
+`fv_sprite_move()` cuesta ~14,6 us medidas con el RTC. Con 11 sprites por frame
+serian ~160 us de los 1.430 del VBLANK, asi que:
+
+- `hud_setup()` fija **posicion y paleta una sola vez** (y pone `COLL_POINT` a 0
+  en los 11, para que un sprite de HUD no pueda disparar `SOLID_HIT`).
+- `hud_draw()` solo reescribe el **patron** de lo que cambia, comparando con
+  una cache (`hud_last_digit`, `hud_last_slot_on`, `hud_last_lives`).
+
+### La barra de combustible
+
+Cinco tramos **fijos** (antes eran 8 y llegaban al centro de la pantalla):
+
+```c
+filled = fuel * 5 / FUEL_MAX;
+```
+
+`FUEL_MAX` = 200 es multiplo de 5, asi que la cuenta sale exacta: 200 -> 5
+tramos, 160 -> 4, 40 -> 1, 0 -> ninguno. Cada tramo son 40 unidades.
+
+### Patrones
+
+Los digitos ocupan 42-51 (`HUD_PAT_DIGIT0`), el icono de vida el 52, y las
+celdas de barra llena/vacia el 54/55 (`HUD_PAT_BAR_ON` / `_OFF`). Todos por
+debajo de 64 y sin tocar 0-2, que el arranque del core escribe con arte de
+demo.
+
+---
+
 ## 8. Sonido (SID 6581, `$D400-$D41F`)
 
 Se reutiliza el driver `sound.c`/`sound.h` de la base (ya incluye

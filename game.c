@@ -835,6 +835,17 @@ static void hud_setup(void) {
                    VC_SPPAL_1 | HUD_SCALE);
     fv_sprite_move((uint8_t)(SPR_HUD_LIVES + 1),
                    HUD_LIVESNUM_X, HUD_Y2, VC_SPPAL_1 | HUD_SCALE);
+
+    /* COLL_POINT a 0 en los 11 sprites del HUD. El barrido de colision del core
+     * recorre los 32 sprites SIN filtrar por Y (manual, 6.1), asi que un sprite
+     * de HUD con el punto de colision sobre una celda solida encenderia
+     * SOLID_HIT y el juego lo leeria como que el AVION toco tierra.
+     *
+     * Se hace con UN bucle de 0 a 10 porque el HUD ocupa slots CONSECUTIVOS
+     * (SPR_HUD_BASE .. SPR_HUD_LIVES+1 = 0..10). Once llamadas sueltas costaban
+     * ~99 bytes y dejaban el stack a cero de margen. */
+    for (i = 0; i <= SPR_HUD_LIVES + 1; i++)
+        fv_oam(i, VC_OAM_COLL, 0);
     hud_last_digit[0] = hud_last_digit[1] = hud_last_digit[2] = hud_last_digit[3] = 0xFF;
     hud_last_lives = 0xFF;
 }
