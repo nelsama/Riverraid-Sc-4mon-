@@ -576,14 +576,14 @@ static const uint8_t tile_grass_p1[8] = { 0x00,0x10,0x00,0x00,0x08,0x00,0x00,0x0
  *
  * La inclinacion la da el ESCALON entre filas del cauce (gen_left cambia de
  * 1 en 1 celda), no el dibujo del tile. Por eso aqui el borde es RECTO:
- * columnas 0-4 cesped, 5-6 arena, 7 agua, igual en las 8 filas. Asi, cuando la
- * fila de al lado tiene el cauce una celda mas a la derecha, el escalon es de 8
- * px limpios y la orilla se lee como una linea continua. */
-static const uint8_t tile_edge_l0_p0[8] = { 0xF8, 0xF8, 0xF8, 0xF8, 0xF8, 0xF8, 0xF8, 0xF8 };
-static const uint8_t tile_edge_l0_p1[8] = { 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06 };
+ * 3 columnas de cesped, 4 de ARENA y 1 de agua, igual en las 8 filas. Asi,
+ * cuando la fila de al lado tiene el cauce una celda mas a la derecha, el
+ * escalon es de 8 px limpios y la orilla se lee como una linea continua. */
+static const uint8_t tile_edge_l0_p0[8] = { 0xE0, 0xE0, 0xE0, 0xE0, 0xE0, 0xE0, 0xE0, 0xE0 };
+static const uint8_t tile_edge_l0_p1[8] = { 0x1E, 0x1E, 0x1E, 0x1E, 0x1E, 0x1E, 0x1E, 0x1E };
 /* ORILLA DERECHA: espejo exacto (agua en la columna 0). */
-static const uint8_t tile_edge_r0_p0[8] = { 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F };
-static const uint8_t tile_edge_r0_p1[8] = { 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60 };
+static const uint8_t tile_edge_r0_p0[8] = { 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07 };
+static const uint8_t tile_edge_r0_p1[8] = { 0x78, 0x78, 0x78, 0x78, 0x78, 0x78, 0x78, 0x78 };
 /* --- FIN ORILLA --- */
 
 /* Arbol/vegetacion para el interior del islote. La forma debe seguir el
