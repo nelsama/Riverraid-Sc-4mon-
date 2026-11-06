@@ -771,7 +771,13 @@ static uint8_t celda_agua(uint8_t cinta_row, uint8_t c);
  * ENTRADA
  * =========================================================================== */
 /* FIRE pulsado? Se mira el joystick y la tecla ' ' del UART, sin efectos
- * secundarios (no dispara): es el "arrancar" de la espera inicial. */
+ * secundarios (no dispara): es el "arrancar" de la espera inicial.
+ *
+ * OJO: esta funcion es la UNICA que lee el UART durante la espera de FIRE, y
+ * se lleva por delante todo lo que no sea FIRE. Por eso la 'q' tambien se
+ * atiende AQUI: si no, la tecla de salir se tiraba a la basura justo en la
+ * pantalla de inicio y en la espera tras cada muerte, que es donde uno la
+ * prueba primero. Deja quit_flag puesto y devuelve 0 (no arranca la partida). */
 static uint8_t fire_pressed(void) {
     uint8_t j = joy_read();
 
@@ -779,6 +785,7 @@ static uint8_t fire_pressed(void) {
     while (rom_uart_rx_ready()) {
         char c = rom_uart_getc();
         if (c == ' ' || c == 'f' || c == 'F') return 1;
+        if (c == 'q' || c == 'Q') { quit_flag = 1; return 0; }
     }
     return 0;
 }
