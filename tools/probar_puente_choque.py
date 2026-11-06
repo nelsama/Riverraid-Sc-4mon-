@@ -52,11 +52,23 @@ def offs():
 
 
 def filas_con_viga(tm):
+    """Filas de cinta que muestran viga o calle ahora mismo."""
     out = []
     for r in range(32):
         if any(v == TILE_BRIDGE or v == TILE_ROAD for v in tm[r]):
             out.append(r)
     return out
+
+
+def filas_de_esta_viga(puente_bit):
+    """Filas de cinta que el JUEGO dice que son de puente (puente_bit != 0).
+
+    Se usa esto y no el tilemap de antes del choque: la cinta rota, asi que una
+    misma fila de cinta acaba mostrando OTRO trozo de rio, y puede tener un
+    puente posterior. Comparar contra las filas vistas antes del choque da
+    falsos negativos (el test decia "quedan celdas" cuando ya estaba borrado).
+    """
+    return [r for r in range(32) if puente_bit[r]]
 
 
 def main():
@@ -100,45 +112,55 @@ def main():
     print("puente_bit: %s" % [k for k in range(32)
                               if ram0[d["puente_bit"] + k]])
 
-    # 2) DEJAR QUE CHOQUE (el avion esta quieto, el rio lo arrastra)
+    # 2) DEJAR QUE CHOQUE. El avion va quieto en el centro y el rio lo
+    #    arrastra, pero si el puente aparece ya arriba (recien generado) tarda
+    #    en llegar: se le da tiempo y se le empuja hacia el cauce.
     print("esperando el choque...")
     vidas_ant = get("/ram.bin")[d["lives"]]
+    murio = False
     t0 = time.time()
-    while time.time() - t0 < 40:
+    while time.time() - t0 < 70:
         r = get("/ram.bin")
         if r[d["lives"]] < vidas_ant:
-            print("CHOQUE detectado (vidas %d -> %d)" % (vidas_ant, r[d["lives"]]))
+            print("CHOQUE detectado (vidas %d -> %d, DBG_MUERTE=%d)"
+                  % (vidas_ant, r[d["lives"]], r[0x3E0]))
+            murio = True
             break
         if r[d["game_over"]]:
             break
-        time.sleep(0.05)
+        # Moverse un poco para no quedarse clavado en una orilla
+        if int(time.time() * 2) % 3 == 0:
+            mandos.pulsa("a", 40)
+        else:
+            mandos.pulsa("d", 40)
+        time.sleep(0.04)
     else:
-        print("no choco en 40 s")
+        print("no choco en 70 s")
         return 2
 
     time.sleep(0.4)
-    tm = json.loads(get("/vram.json"))["tilemap"]
+    if not murio:
+        print("el avion NO llego a chocar: no hay nada que comprobar")
+        return 2
     for k in range(8):
         ram1 = get("/ram.bin")
-        pb = [i for i in range(32) if ram1[d["puente_bit"] + i]]
+        pb = filas_de_esta_viga(ram1[d["puente_bit"]:d["puente_bit"] + 32])
         print("  +%.2fs puente_bit=%s esperando_fire=%d plane_dead=%d"
               % (0.1 * (k + 1), pb, ram1[d["esperando_fire"]],
                  ram1[d["plane_dead"]]))
+        if k == 3:
+            ram_ok = ram1
         time.sleep(0.1)
 
-    malas = []
-    for r in filas_antes:
-        for c, v in enumerate(tm[r]):
-            if v in (TILE_BRIDGE, TILE_ROAD):
-                malas.append((r, c, hex(v)))
-
-    if malas:
-        print("FALLO: quedan %d celdas de puente sin borrar" % len(malas))
-        for m in malas[:12]:
-            print("   fila %d col %d tile %s" % m)
+    # VEREDICTO: el juego no debe tener ninguna fila marcada como puente.
+    # Es la unica comprobacion fiable, porque el tilemap de una fila de cinta
+    # puede estar mostrando ya otro trozo del rio (con otro puente).
+    pb = filas_de_esta_viga(ram_ok[d["puente_bit"]:d["puente_bit"] + 32])
+    if pb:
+        print("FALLO: el juego sigue marcando puente en las filas %s" % pb)
         return 1
 
-    print("OK: el puente desaparecio por completo (viga y calle)")
+    print("OK: el puente desaparecio por completo (puente_bit vacio)")
     return 0
 
 
