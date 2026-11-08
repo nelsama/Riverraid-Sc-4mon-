@@ -102,6 +102,12 @@ static void vid_pal_set(uint8_t entrada, uint16_t rgb444) {
     VID_PAL_HI  = (uint8_t)((rgb444 >> 8) & 0x0F);
 }
 
+/* Color del trazo de la fuente (global). Solo surte efecto tras un VID_SETUP,
+ * que limpia el tilemap: llamarlo al final de setup_video(), nunca en partida. */
+static void vid_set_font_color(uint8_t color) {
+    VID_FONT_COLOR = (uint8_t)(color & 0x03);
+}
+
 /* Entrada de fondo = paleta*4 + color; entrada de sprite = 16 + paleta*4+color */
 static void vid_pal_set_bg(uint8_t paleta, uint8_t color, uint16_t rgb444) {
     vid_pal_set((uint8_t)((paleta << 2) | (color & 3)), rgb444);

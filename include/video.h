@@ -55,6 +55,11 @@
 #define VID_PAL_HI      (*(volatile uint8_t *)0xD815) /* W: bits 11:8 + dispara+inc */
 #define VID_SETUP       (*(volatile uint8_t *)0xD816) /* W: dispara setup de VRAM */
 #define VID_SETUP_ST    (*(volatile uint8_t *)0xD817) /* R: estado del setup      */
+/* W: entrada de paleta del TRAZO de la fuente (0-3). Es GLOBAL para toda la
+ * fuente y NO repinta por si solo: hay que disparar VID_SETUP para que los
+ * glifos se re-expandan con el color nuevo (y el setup limpia el tilemap).
+ * Valor al arrancar: 3. Ver manual del core, §4.5. */
+#define VID_FONT_COLOR  (*(volatile uint8_t *)0xD818)
 
 /* ===========================================================================
  * 2. BITS DE STATUS ($D803)
