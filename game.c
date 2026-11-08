@@ -1018,7 +1018,11 @@ static void hud_draw(void) {
 /* ISLA: GEN_ISLAND_W es el HUECO central (suelo + las dos orillas), o sea las
  * columnas de tierra que se ven. Con 9 columnas y dos brazos de 5 el cauce se
  * abre a GEN_SPLIT_W = 19 celdas. */
-#define GEN_ARM_MIN    6      /* ancho MINIMO de cada brazo (tramo duro)  */
+#define GEN_ARM_MIN    5      /* ancho MINIMO de cada brazo (tramo duro).
+                              * OJO: gen_arm_now() NO usa esta constante, usa
+                              * la columna PROG_BRAZO de prog_tab[] (que baja
+                              * a 5 en el nivel 7). Se deja aqui para que el
+                              * nombre no mienta si alguien lo busca. */
 #define GEN_ARM_EASY   8      /* ancho de cada brazo en el primer tramo    */
 #define GEN_ISLAND_W   9      /* isla visible = 9 columnas de tierra      */
 /* ISLA MINIMA, en COLUMNAS VISIBLES (costa + cesped + costa).
@@ -1047,7 +1051,10 @@ static void hud_draw(void) {
  *     2   |    3    | 1 px/4f  | ausente  |  22   |    18
  *     3   |    4    | 1 px/3f  | 1 px/3f  |  26   |    17
  *     4   |    5    | 1 px/2f  | 1 px/2f  |  30   |    16
- *     5   |   6+    | 1 px/1f  | 1 px/1f  |  34   |    15
+ *     5   |    6    | 1 px/1f  | 1 px/1f  |  34   |    15
+ *     6   |    7    | 1 px/1f  | 1 px/1f  |  36   |    14
+ *     7   |    8    | 1 px/1f  | 1 px/1f  |  38   |    13
+ *     8   |   9+    | 1 px/1f  | 1 px/1f  |  40   |    12
  *
  * "1 px/Nf" = se desplaza 1 px de lado cada N frames. 0 = NO se desplaza de
  * lado (sigue bajando con el scroll, o sea que se le puede disparar y chocar).
@@ -1057,9 +1064,16 @@ static void hud_draw(void) {
  *
  * CAUCE: el ancho minimo es el suelo que gen_w_min_now() impone al bloque.
  * Ademas de estrecharse, deja menos agua entre orillas = mas estrecho de
- * verdad. 15 es el minimo seguro: el avion mide 2 celdas y la orilla 1 a cada
- * lado, asi que con menos el jugador siente que rozza paredes invisibles. */
-#define NIVEL_MAX  5
+ * verdad.
+ *
+ * DE LOS NIVELES 6-8 (ancho 14, 13 y 12): el ancho cuenta las DOS orillas
+ * (1 celda cada una), asi que al nivel 8 el jugador tiene 10 celdas de agua =
+ * 80 px. El avion mide 16 px: cabe, pero el margen por toque de tecla es de
+ * pocos px y ahi ya no hay perdon. 12 es el SUELO del juego: por debajo se
+ * vuelve el "choque con algo invisible" que costo tanto quitar, porque el
+ * jugador no ve donde esta el limite real del cauce. Si algun dia se toca,
+ * que sea con una partida grabada delante, no a ojo. */
+#define NIVEL_MAX  8
 
 /* Columnas de la tabla. */
 #define PROG_BARCO   0   /* frames entre pasos de lado del barco (0=quieto) */
@@ -1076,7 +1090,10 @@ static const uint8_t prog_tab[NIVEL_MAX + 1][PROG_COLS] = {
     {     4,     0,    22,    18,     7 },   /* nivel 2: puente 3 */
     {     3,     3,    26,    17,     7 },   /* nivel 3: puente 4 */
     {     2,     2,    30,    16,     6 },   /* nivel 4: puente 5 */
-    {     1,     1,    34,    15,     6 }    /* nivel 5: puente 6+ */
+    {     1,     1,    34,    15,     6 },   /* nivel 5: puente 6 */
+    {     1,     1,    36,    14,     6 },   /* nivel 6: puente 7 */
+    {     1,     1,    38,    13,     5 },   /* nivel 7: puente 8 */
+    {     1,     1,    40,    12,     5 }    /* nivel 8: puente 9+ */
 };
 
 /* Nivel actual, derivado del tramo (gen_sector empieza en 1).
@@ -1848,6 +1865,23 @@ static void setup_video(void) {
     vid_wait_setup();    /* que el setup del core haya terminado de verdad */
     fv_clear_oam();      /* el OAM NO lo limpia vid_clear_vram(): en hardware
                           * trae basura y el campo TILE daba '7'/'8' ASCII */
+
+    /* COLOR DEL TRAZO DE LA FUENTE ($D818 = 3).
+     *
+     * Es GLOBAL para toda la fuente y NO se puede elegir por celda: cada celda
+     * solo aporta su PALETA (bits 1:0 del atributo), y el color dentro de esa
+     * paleta lo fija $D818. Con 3, el texto de una celda sale de la entrada
+     * `paleta*4 + 3`, que es lo que asume el comentario de PAL_MENU.
+     *
+     * VA ANTES DEL SETUP, y ahi esta el motivo: escribir $D818 no repinta nada
+     * por si solo, porque los glifos ya estan expandidos en la BSRAM. Solo
+     * VID_SETUP los vuelve a expandir con el color nuevo. Como el setup de
+     * abajo es el que expande la fuente, el color tiene que estar puesto ya.
+     *
+     * El core lo deja en 3 al arrancar, pero el juego se recarga encima de si
+     * mismo con LOAD/R sin resetear el core, asi que no hay que fiarse. */
+    vid_set_font_color(3);
+
     vid_wait_vblank();
     vid_clear_vram();
 
@@ -1879,10 +1913,21 @@ static void setup_video(void) {
 
     /* Paleta 3 (cesped y orillas): 1 = verde claro #00AA00, 2 = arena #DD8833,
      * 3 = verde oscuro #006600. El agua de la orilla es transparente
-     * (indice 0) y deja ver el BG_COLOR, que es el mismo azul del rio. */
+     * (indice 0) y deja ver el BG_COLOR, que es el mismo azul del rio.
+     *
+     * OJO CON EL 3: `vid_pal_set_bg(paleta, color)` escribe la entrada
+     * `paleta*4 + color`, asi que (PAL_EDGE, 3) es la entrada 15, y la entrada 15
+     * es el BG_COLOR (paleta 3, color 3). O sea: este "verde oscuro de la orilla"
+     * es TAMBIEN el fondo de toda la pantalla y el color del texto de las celdas
+     * de paleta 3. Cambiarlo no afecta solo al cesped.
+     *
+     * Aqui no pasa nada porque vid_set_bgcolor() de arriba ya puso el mismo azul
+     * en la 15, y este verde lo sobreescribe a proposito para el cesped: el
+     * cauce no depende de el (va opaco, sin indice 0). Pero si algun dia se
+     * quiere tocar el fondo del rio, hay que tocar tambien esta linea. */
     vid_pal_set_bg(PAL_EDGE, 1, VC_RGB444(0x0, 0xA, 0x0));
     vid_pal_set_bg(PAL_EDGE, 2, VC_RGB444(0xC, 0x8, 0x2));   /* arena: calle del puente */
-    vid_pal_set_bg(PAL_EDGE, 3, VC_RGB444(0x0, 0x6, 0x0));
+    vid_pal_set_bg(PAL_EDGE, 3, VC_RGB444(0x0, 0x6, 0x0));   /* = BG_COLOR (entrada 15) */
 
     /* ---- PALETAS DE SPRITE: solo se escriben las entradas que CAMBIAN ----
      * Las que no aparecen se quedan con el preset de include/video.h. El color
