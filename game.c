@@ -1934,17 +1934,23 @@ static void setup_video(void) {
      * 0 es siempre transparente y no se puede reprogramar. */
 
     /* Paleta 1. Compartida por avion, bala, explosion y HUD. Aqui pasa a ser
-     *   1 = cian #00FFFF   2 = azul #22AAEE   3 = blanco #FFFFFF
+     *   1 = amarillo claro #FFFF00   2 = amarillo #FFCC00   3 = blanco #FFFFFF
+     *
+     * OJO CON EL 1 Y EL 2: los comparte el avion con el HUD. Los DIGITOS del
+     * marcador y la barra de combustible usan estos indices (no el 3), asi que
+     * cambiarlos cambia tambien esas dos cosas. Solo el icono de vida es
+     * blanco. Si algun dia se quiere el HUD entero blanco, hay que cambiar los
+     * indices que emiten los patrones de hud_digit y hud_bar_*, no esta paleta.
      *
      * OJO CON EL 3: no basta con dejarlo al preset. El preset solo vale si
      * nadie ha tocado la entrada, y en este core la paleta se reprograma (y el
-     * setup de VRAM la puede dejar a medias). Si el 3 no se escribe aqui, el HUD
-     * y el avion salen con el color que hubiera de antes: se vio el marcador
+     * setup de VRAM la puede dejar a medias). Si el 3 no se escribe aqui, el
+     * HUD y el avion salen con el color que hubiera de antes: se vio el marcador
      * AMARILLO en vez de blanco. Se escribe SIEMPRE, aunque coincida con el
      * preset; son 9 bytes y el HUD depende de ello. */
-    vid_pal_set_spr(SPR_PLANE_PAL, 1, VC_RGB444(0x0, 0xF, 0xF));  /* cian   */
-    vid_pal_set_spr(SPR_PLANE_PAL, 2, VC_RGB444(0x2, 0xA, 0xE));  /* azul   */
-    vid_pal_set_spr(SPR_PLANE_PAL, 3, VC_RGB444(0xF, 0xF, 0xF));  /* blanco */
+    vid_pal_set_spr(SPR_PLANE_PAL, 1, VC_RGB444(0xF, 0xF, 0x0));  /* amarillo claro */
+    vid_pal_set_spr(SPR_PLANE_PAL, 2, VC_RGB444(0xF, 0xC, 0x0));  /* amarillo       */
+    vid_pal_set_spr(SPR_PLANE_PAL, 3, VC_RGB444(0xF, 0xF, 0xF));  /* blanco         */
 
     /* Paleta 2. Solo el barco.
      *   1 = negro #000000   2 = azul #0000FF   3 = rojo #BB0011 */
