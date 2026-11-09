@@ -31,6 +31,41 @@
  * 1. REGISTROS DEL CORE (acceso directo)
  * =========================================================================== */
 
+/* ===========================================================================
+ * 1. REGISTROS DEL CORE (acceso directo)
+ * ===========================================================================
+ * Con TEST_HOOKS (tests de host en sim65) los registros se redirigen a RAM
+ * ($F000+), igual que hace video.s, para que el test pueda leer lo escrito.
+ * En el 6502 real no existe RAM direccionable en $D800, y en sim65 escribir
+ * ahi no tiene efecto observable. */
+
+#ifdef TEST_HOOKS
+#define VID_ADDR_LO     (*(volatile uint8_t *)0xF000)
+#define VID_ADDR_HI     (*(volatile uint8_t *)0xF001)
+#define VID_DATA        (*(volatile uint8_t *)0xF002)
+#define VID_STATUS      (*(volatile uint8_t *)0xF003)
+#define VID_SCROLL_X_LO (*(volatile uint8_t *)0xF004)
+#define VID_SCROLL_X_HI (*(volatile uint8_t *)0xF005)
+#define VID_SCROLL_Y_LO (*(volatile uint8_t *)0xF006)
+#define VID_SCROLL_Y_HI (*(volatile uint8_t *)0xF007)
+#define VID_MAP_STRIDE  (*(volatile uint8_t *)0xF008)
+#define VID_RASTER_LINE0 (*(volatile uint8_t *)0xF009)
+#define VID_BAND2_X_LO  (*(volatile uint8_t *)0xF00A)
+#define VID_BAND2_X_HI  (*(volatile uint8_t *)0xF00B)
+#define VID_BAND2_Y_LO  (*(volatile uint8_t *)0xF00C)
+#define VID_BAND2_Y_HI  (*(volatile uint8_t *)0xF00D)
+#define VID_RASTER_LINE1 (*(volatile uint8_t *)0xF00E)
+#define VID_BAND3_X_LO  (*(volatile uint8_t *)0xF00F)
+#define VID_BAND3_X_HI  (*(volatile uint8_t *)0xF010)
+#define VID_BAND3_Y_LO  (*(volatile uint8_t *)0xF011)
+#define VID_BAND3_Y_HI  (*(volatile uint8_t *)0xF012)
+#define VID_PAL_PTR     (*(volatile uint8_t *)0xF013)
+#define VID_PAL_LO      (*(volatile uint8_t *)0xF014)
+#define VID_PAL_HI      (*(volatile uint8_t *)0xF015)
+#define VID_SETUP       (*(volatile uint8_t *)0xF016)
+#define VID_SETUP_ST    (*(volatile uint8_t *)0xF017)
+#define VID_FONT_COLOR  (*(volatile uint8_t *)0xF018)
+#else
 #define VID_ADDR_LO   (*(volatile uint8_t *)0xD800)  /* W: dir baja VRAM     */
 #define VID_ADDR_HI   (*(volatile uint8_t *)0xD801)  /* W: área + dir alta   */
 #define VID_DATA      (*(volatile uint8_t *)0xD802)  /* W: dato (dispara)    */
@@ -55,11 +90,8 @@
 #define VID_PAL_HI      (*(volatile uint8_t *)0xD815) /* W: bits 11:8 + dispara+inc */
 #define VID_SETUP       (*(volatile uint8_t *)0xD816) /* W: dispara setup de VRAM */
 #define VID_SETUP_ST    (*(volatile uint8_t *)0xD817) /* R: estado del setup      */
-/* W: entrada de paleta del TRAZO de la fuente (0-3). Es GLOBAL para toda la
- * fuente y NO repinta por si solo: hay que disparar VID_SETUP para que los
- * glifos se re-expandan con el color nuevo (y el setup limpia el tilemap).
- * Valor al arrancar: 3. Ver manual del core, §4.5. */
-#define VID_FONT_COLOR  (*(volatile uint8_t *)0xD818)
+#define VID_FONT_COLOR  (*(volatile uint8_t *)0xD818) /* W: color del trazo (0-3) */
+#endif
 
 /* ===========================================================================
  * 2. BITS DE STATUS ($D803)
@@ -203,13 +235,20 @@ void     vc_set_bgcolor(uint16_t rgb444);
 
 /* ===========================================================================
  * 6. ATRIBUTO DEL FONDO (bytes de $D801 área ATTR)
+ * ===========================================================================
+ * El RTL solo lee TRES bits de este byte:
+ *   bits 1:0 = paleta (0-3, cuatro paletas)
+ *   bit  4   = SOLIDO
+ * Los bits 2, 3, 5, 6 y 7 llegan a la BSRAM y se DESCARTAN al leer.
+ *
+ * Por eso abajo solo existe VC_ATTR_SOLID: los flips y la prioridad del FONDO
+ * no estan implementados en el hardware (manual del core, §2.2 y 03-FORMATOS).
+ * Si necesitas voltear o dar prioridad, hazlo con SPRITES (sus flags SI
+ * funcionan) o con patrones de tile distintos.
  * =========================================================================== */
 
-#define VC_ATTR_PRIO          0x80  /* sprite/tile detrás del fondo           */
-#define VC_ATTR_FLIP_Y        0x40
-#define VC_ATTR_FLIP_X        0x20
 #define VC_ATTR_SOLID         0x10  /* celda sólida (colisión)                */
-/* bits 3:0 = paleta */
+/* bits 1:0 = paleta (0-3). El resto de bits se ignoran en el hardware. */
 
 /* ===========================================================================
  * 7. FLAGS DE SPRITE (campo +3 del OAM)
@@ -233,6 +272,7 @@ void     vc_set_bgcolor(uint16_t rgb444);
 #define VC_OAM_COLL           4
 
 /* Puntos de colisión predefinidos (para COLL_POINT, offset 0-7) */
+#define VC_COLL_TOPLEFT       0x00  /* dx=0, dy=0  -> esquina sup-izq         */
 #define VC_COLL_CENTER        0x24  /* dx=4, dy=4  → centro                   */
 #define VC_COLL_FEET          0x3C  /* dx=4, dy=7  → pie                      */
 #define VC_COLL_HEAD          0x04  /* dx=4, dy=0  → cabeza                   */
@@ -256,6 +296,34 @@ uint8_t  vc_status(void);           /* lee STATUS ($D803)                    */
  * Dispara el setup del core: limpia tilemap/atributos/patrones y re-expande la
  * fuente (~120-275 us). vc_clear_vram() lo usa internamente. */
 void     vc_wait_setup(void);       /* espera a que el setup termine         */
+
+/* --- Direccion lineal de una celda del tilemap: row*64 + col ---
+ *
+ * Version FUNCION de la macro VC_CELL. Cuesta 32 B en la libreria, pero con 8
+ * usos de argumentos variables ahorra ~144 B en el binario del juego (la macro
+ * repite el producto en CADA uso).
+ *
+ * Cuando usar cada una:
+ *   - ambos argumentos constantes      -> VC_CELL   (se pliega, 0 coste)
+ *   - columna constante                -> VC_CELL   (cc65 la reduce a incaxN)
+ *   - bucle sobre una fila o columna   -> VC_CELL una vez + ir incrementando
+ *   - llamadas sueltas con variables   -> vc_cell()
+ *
+ * Sirve para la MISMA direccion en tilemap y atributos (solo cambia el area). */
+uint16_t vc_cell(uint8_t col, uint8_t row);
+
+/* --- Color de la fuente ($D818) ---
+ * Elige qué entrada de paleta (0-3) usa el TRAZO de la fuente. Es GLOBAL: un
+ * solo valor para todo el texto, y por defecto 3 (blanco en las paletas 0-1).
+ *
+ * OJO: escribir $D818 no repinta. Los patrones ya están expandidos en la
+ * BSRAM, así que hay que re-expandir con el setup ($D816) — y el setup LIMPIA
+ * el tilemap, de modo que este cambio obliga a redibujar la pantalla.
+ *
+ * Para texto de varios colores SIN repintar, usa la paleta de cada celda
+ * (bits 1:0 del atributo): con el color de trazo 3 ya tienes hasta 4 colores
+ * distintos a la vez, uno por paleta de fondo. */
+void     vc_set_font_color(uint8_t color);   /* 0-3; 0 = invisible           */
 
 /* --- Escritura indirecta rápida (no auto-incrementa) --- */
 void     vc_write(uint8_t area, uint16_t addr, uint8_t data);
@@ -300,7 +368,11 @@ void     vc_pal_set(uint8_t entrada, uint16_t rgb444);
 /* Carga 'count' colores RGB444 consecutivos desde un array (auto-incrementa). */
 void     vc_pal_load(uint8_t entrada, const uint16_t *colores, uint8_t count);
 
-/* --- Helpers de paleta (src/gfx.c): por (paleta, color) o paleta completa --- */
+/* --- Helpers de paleta (src/gfx.c): por (paleta, color) o paleta completa ---
+ * OJO: una entrada de paleta es COMPARTIDA. Cambiarla afecta a todo lo que la
+ * use: los tiles graficos Y el texto de esa paleta. No es "el color del texto".
+ * Truco: reserva una paleta entera para el texto y no la uses para graficos.
+ * La entrada (3,3) es BG_COLOR: ver vc_set_bgcolor(). */
 void     vc_pal_set_bg(uint8_t paleta, uint8_t color, uint16_t rgb444);
 void     vc_pal_set_spr(uint8_t paleta, uint8_t color, uint16_t rgb444);
 void     vc_pal_load_bg(uint8_t paleta, const uint16_t *colores4);
