@@ -395,4 +395,21 @@ typedef struct {
  *   }
  */
 
+/* ===========================================================================
+ * FLAG DE USUARIO ($C004)
+ * ===========================================================================
+ * Flip-flop del FPGA, no codigo del monitor (fpga-6502-16k,
+ * docs/03-FORMATOS-Y-MEMORIA.md).
+ *
+ *   bit 0 = 1 -> al reiniciar, el monitor NO ejecuta BOOT.INI (va al prompt)
+ *   bit 0 = 0 -> al reiniciar, el monitor SI ejecuta BOOT.INI
+ *
+ * Sobrevive al reset de CPU (boton S1 y reset por software); solo se pierde al
+ * recargar el bitstream. Los bits 7-1 siempre leen 0.
+ *
+ * Un juego que se lanza desde BOOT.INI tiene que ponerlo a 1 antes de salir, o
+ * el monitor volveria a arrancarlo en bucle. */
+#define SYSFLAGS          (*(volatile uint8_t *)0xC004)
+#define SYSFLAG_NOBOOT    0x01
+
 #endif /* ROMAPI_H */

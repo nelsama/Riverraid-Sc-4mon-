@@ -231,20 +231,23 @@ static uint8_t  scroll_step;
  * PALETAS
  * =========================================================================== */
 #define PAL_WATER    VC_BGPAL_1   /* agua: azul (1), oleaje (2), blanco (3)    */
-#define PAL_ISLAND   VC_BGPAL_2   /* isla y tierra: 1 = arena, 2 = vegetacion,
-                                   * 3 = agua (igual que el cauce) */
+/* Paleta 2 = MENU. Estuvo reservada para la isla (PAL_ISLAND) pero NINGUN tile
+ * la usaba: la isla se pinta con cesped y orillas, o sea con PAL_EDGE. Se
+ * comprobo con grep: solo salia en #defines y comentarios. Como estaba libre,
+ * se reutiliza para el cartel y asi no hay que tocar el puente ni el agua:
+ *   1 = NEGRO (fondo del cartel)   3 = BLANCO (trazo de la fuente)
+ * OJO CON EL REPARTO DE LA FUENTE: el glifo pinta el trazo con el indice de
+ * $D818 (=3) y el RESTO del glifo con el indice 1. Con esos dos en negro y
+ * blanco, el cartel se lee. */
+#define PAL_MENU     VC_BGPAL_2
 #define PAL_EDGE     VC_BGPAL_3   /* cesped y orillas. 1 = verde claro,
                                    * 2 = verde oscuro, 3 = arena. El agua de la
                                    * orilla va en el indice 0 (transparente) y
-                                   * deja ver el BG_COLOR (azul del rio). */
-/* MADERA: paleta 0, libre desde que se quito el panel de GAME OVER (el cesped
- * usa PAL_EDGE y la isla PAL_ISLAND). Se usa SOLO en las filas del puente, asi
- * que no compite con nada. Con esta paleta la viga tiene su propio par de
- * tonos sin tocar los de la isla:
- *   1 = marron oscuro (junta)  2 = arena/madera clara (tabla) */
+                                   * deja ver el BG_COLOR (verde oscuro). */
+/* MADERA: paleta 0, solo para la viga del puente. Con esta paleta la viga
+ * tiene su propio par de tonos sin tocar los de la tierra:
+ *   1 = marron oscuro   2 = tabla clara   3 = junta oscura */
 #define PAL_WOOD     VC_BGPAL_0
-/* Panel de GAME OVER: ya no existe; se deja el nombre por el codigo de paleta. */
-#define PAL_MENU     VC_BGPAL_0
 /* ===========================================================================
  * SPRITES
  * ===========================================================================
@@ -586,14 +589,22 @@ static const uint8_t tile_grass_p1[8] = { 0x00,0x10,0x00,0x00,0x08,0x00,0x00,0x0
  *
  * La inclinacion la da el ESCALON entre filas del cauce (gen_left cambia de
  * 1 en 1 celda), no el dibujo del tile. Por eso aqui el borde es RECTO:
- * 3 columnas de cesped, 4 de ARENA y 1 de agua, igual en las 8 filas. Asi,
- * cuando la fila de al lado tiene el cauce una celda mas a la derecha, el
- * escalon es de 8 px limpios y la orilla se lee como una linea continua. */
+ * 3 columnas de cesped, 5 de ARENA y NINGUNA transparente, igual en las 8
+ * filas. Asi, cuando la fila de al lado tiene el cauce una celda mas a la
+ * derecha, el escalon es de 8 px limpios y la orilla se lee como una linea
+ * continua.
+ *
+ * OJO: antes la columna del lado del agua era TRANSPARENTE (p0=0,p1=0 -> indice
+ * 0) para que el cauce se metiera un pixel bajo la orilla. Se quito por dos
+ * motivos: obligaba a que BG_COLOR fuese un verde parecido al cesped (si no,
+ * la linea del borde cantaba), y el MENU necesita BG_COLOR NEGRO para que las
+ * letras se lean sobre negro. Con la orilla opaca, BG_COLOR deja de importar
+ * en el rio. */
 static const uint8_t tile_edge_l0_p0[8] = { 0xE0, 0xE0, 0xE0, 0xE0, 0xE0, 0xE0, 0xE0, 0xE0 };
-static const uint8_t tile_edge_l0_p1[8] = { 0x1E, 0x1E, 0x1E, 0x1E, 0x1E, 0x1E, 0x1E, 0x1E };
-/* ORILLA DERECHA: espejo exacto (agua en la columna 0). */
+static const uint8_t tile_edge_l0_p1[8] = { 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F };
+/* ORILLA DERECHA: espejo exacto (arena en la columna 7). */
 static const uint8_t tile_edge_r0_p0[8] = { 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07 };
-static const uint8_t tile_edge_r0_p1[8] = { 0x78, 0x78, 0x78, 0x78, 0x78, 0x78, 0x78, 0x78 };
+static const uint8_t tile_edge_r0_p1[8] = { 0xF8, 0xF8, 0xF8, 0xF8, 0xF8, 0xF8, 0xF8, 0xF8 };
 /* --- FIN ORILLA --- */
 
 /* Arbol/vegetacion para el interior del islote. La forma debe seguir el
@@ -623,11 +634,15 @@ static const uint8_t tile_bridge_p1[8] = { 0x00,0x00,0x04,0x00,0x00,0x01,0x00,0x
 static const uint8_t tile_road_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
 
 
-/* Fondo del panel de GAME OVER: opaco y en INDICE 1, que en PAL_MENU es el
- * NEGRO. La fuente siempre pinta el indice 3 (BLANCO en PAL_MENU), asi que
- * cada pieza usa un indice distinto. Con un tile transparente (0) se veria el rio. */
-/* (tile_panel_p0/p1: fondo del panel de GAME OVER, ELIMINADO junto con el
- * panel. No se usaban y ocupaban bytes de RODATA.) */
+/* Fondo del MENU: opaco y en INDICE 1, que en PAL_MENU (= PAL_WOOD) es el
+ * NEGRO. La fuente siempre pinta el indice 3 (BLANCO), asi que relleno y texto
+ * usan indices distintos y se distinguen sin tocar la paleta del trazo.
+ *
+ * SIN este tile las celdas del menu serian transparentes y se veria el rio
+ * detras; el cartel se leia mal. Indice = (p1<<1)|p0, asi que p0 = 1 y p1 = 0
+ * dan el indice 1. */
+static const uint8_t tile_panel_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+static const uint8_t tile_panel_p1[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
 
 /* Agua OPACA: fondo azul claro (indice 3) con oleaje suave en un azul
  * intermedio (indice 2). Se evita SIEMPRE el indice 0 (transparente), que
@@ -770,24 +785,15 @@ static uint8_t celda_agua(uint8_t cinta_row, uint8_t c);
 /* ===========================================================================
  * ENTRADA
  * =========================================================================== */
-/* FIRE pulsado? Se mira el joystick y la tecla ' ' del UART, sin efectos
- * secundarios (no dispara): es el "arrancar" de la espera inicial.
+/* FIRE pulsado? SOLO el joystick.
  *
- * OJO: esta funcion es la UNICA que lee el UART durante la espera de FIRE, y
- * se lleva por delante todo lo que no sea FIRE. Por eso la 'q' tambien se
- * atiende AQUI: si no, la tecla de salir se tiraba a la basura justo en la
- * pantalla de inicio y en la espera tras cada muerte, que es donde uno la
- * prueba primero. Deja quit_flag puesto y devuelve 0 (no arranca la partida). */
+ * EL JUEGO YA NO LEE EL UART. Ni para arrancar, ni para moverse, ni para
+ * salir: todo va por el joystick y la salida es la opcion SALIR del menu de
+ * game over. Quitar los dos bucles del UART libera ~180 bytes de CODE, y aqui
+ * el codigo tambien es RAM (el binario se carga en $0800): ese hueco es el que
+ * paga el menu. */
 static uint8_t fire_pressed(void) {
-    uint8_t j = joy_read();
-
-    if (j & JOY_A_FIRE) return 1;
-    while (rom_uart_rx_ready()) {
-        char c = rom_uart_getc();
-        if (c == ' ' || c == 'f' || c == 'F') return 1;
-        if (c == 'q' || c == 'Q') { quit_flag = 1; return 0; }
-    }
-    return 0;
+    return (uint8_t)((joy_read() & JOY_A_FIRE) != 0);
 }
 
 static void read_input(void) {
@@ -800,25 +806,6 @@ static void read_input(void) {
     if (j & JOY_A_UP)    { if (scroll_speed < SCROLL_MAX) scroll_speed++; }
     if (j & JOY_A_DOWN)  { if (scroll_speed > SCROLL_MIN) scroll_speed--; }
     if (j & JOY_A_FIRE)  { fire_bullet(); }
-
-    while (rom_uart_rx_ready()) {
-        char c = rom_uart_getc();
-        switch (c) {
-            case 'a': case 'A': case 'j': case 'J': case '4': case 0x12:
-                if (plane_x > PLANE_MIN_X) plane_x = (uint8_t)(plane_x - PLANE_SPEED); break;
-            case 'd': case 'D': case 'l': case 'L': case '6': case 0x13:
-                if (plane_x < PLANE_MAX_X) plane_x = (uint8_t)(plane_x + PLANE_SPEED); break;
-            case 'w': case 'W': case 'i': case 'I': case '8': case 0x10:
-                if (scroll_speed < SCROLL_MAX) scroll_speed++; break;
-            case 's': case 'S': case 'k': case 'K': case '2': case 0x11:
-                if (scroll_speed > SCROLL_MIN) scroll_speed--; break;
-            case ' ':
-                fire_bullet(); break;
-            case 'q': case 'Q':
-                quit_flag = 1; break;
-            default: break;
-        }
-    }
 }
 
 
@@ -1748,7 +1735,7 @@ static uint8_t generate_world_row(uint32_t n) {
             if (puente_bit[cinta_row]) {
                 if (col >= gen_left && col <= gen_right) {
                     /* VIGA: mismo patron que la calle, pero en el indice 3 de
-                     * PAL_ISLAND (madera) para que se distinga del camino. */
+                     * PAL_WOOD (madera) para que se distinga del camino. */
                     /* VIGA: dos variantes que alternan por fila de cinta, para
                      * que la madera no se vea como una banda lisa. */
                     tile = TILE_BRIDGE;
@@ -1829,6 +1816,8 @@ static void load_patterns(void) {
     fv_load_bg_pattern(TILE_COAST_M, tile_edge_r0_p0, tile_edge_r0_p1);
 
     fv_load_bg_pattern(TILE_BRIDGE,  tile_bridge_p0,  tile_bridge_p1);
+    /* Fondo negro del MENU (opaco en el indice 1). */
+    fv_load_bg_pattern(TILE_PANEL,   tile_panel_p0,   tile_panel_p1);
     /* TILE_TREE no se carga: nunca se pinta. */
     fv_load_bg_pattern(TILE_ROAD,    tile_bridge_p1,  tile_road_p1);
 
@@ -1890,7 +1879,10 @@ static void setup_video(void) {
     /* Paleta 0 = MADERA (la del puente). OJO: el antiguo panel de GAME OVER
      * escribia esta MISMA paleta unas lineas mas abajo y la dejaba en negro
      * (el puente salia negro). Ahora solo la usa la viga:
-     *   1 = marron oscuro (no se emite)   2 = tabla clara   3 = junta oscura */
+     *   1 = marron oscuro   2 = tabla clara   3 = junta oscura
+     * OJO: la VIGA SI EMITE EL INDICE 1 (el patron es p0=1,p1=0 en las columnas
+     * de la veta), aunque un comentario viejo decia que no. Ponerlo negro puso
+     * el puente negro. */
     vid_pal_set_bg(PAL_WOOD, 1, VC_RGB444(0x8, 0x4, 0x1));   /* marron oscuro */
     vid_pal_set_bg(PAL_WOOD, 2, VC_RGB444(0xC, 0x8, 0x2));   /* tabla clara   */
     vid_pal_set_bg(PAL_WOOD, 3, VC_RGB444(0x8, 0x4, 0x1));   /* junta oscura  */
@@ -1905,11 +1897,12 @@ static void setup_video(void) {
     vid_pal_set_bg(PAL_WATER, 2, VC_RGB444(0x1, 0x4, 0xE));   /* oleaje */
     vid_pal_set_bg(PAL_WATER, 3, VC_RGB444(0x2, 0x6, 0xF));
 
-    /* Paleta 2 (PAL_ISLAND y tierra): 1 = arena #DD8833, 2 = vegetacion #007700,
-     * 3 = agua #2266FF. El 3 debe ser el MISMO azul del cauce para que la isla
-     * no tenga borde negro. */
-    vid_pal_set_bg(PAL_ISLAND, 1, VC_RGB444(0xD, 0x8, 0x3));
-    vid_pal_set_bg(PAL_ISLAND, 2, VC_RGB444(0x0, 0x7, 0x0));
+    /* Paleta 2 = MENU: 1 = NEGRO (fondo del cartel), 3 = BLANCO (trazo).
+     * Los otros dos indices no los usa nadie; se dejan sin escribir y quedan al
+     * preset. Ningun tile de fondo usa esta paleta, asi que no compite con el
+     * rio ni con el puente. */
+    vid_pal_set_bg(PAL_MENU, 1, VC_RGB444(0x0, 0x0, 0x0));   /* negro  */
+    vid_pal_set_bg(PAL_MENU, 3, VC_RGB444(0xF, 0xF, 0xF));   /* blanco */
 
     /* Paleta 3 (cesped y orillas): 1 = verde claro #00AA00, 2 = arena #DD8833,
      * 3 = verde oscuro #006600. El agua de la orilla es transparente
@@ -2369,7 +2362,7 @@ static uint8_t celda_en_tierra(uint8_t cinta_row, uint8_t c) {
  * auto-incremento del core, pero el incremento lo dispara VID_PAL_HI y el primer
  * VID_PAL_LO de cada color se colaba en la entrada anterior: los tres colores
  * acababan machacandose y el agua se quedaba en el color de OTRA paleta (verde,
- * que es PAL_ISLAND).
+ * que es PAL_WOOD).
  *
  * rgb444 en hexadecimal 0xRGB. */
 static void puente_flash_on(void) {
@@ -3232,6 +3225,13 @@ static void reset_game(void) {
     sprites_off = 0;
     oam_cache_invalida = 1;
 
+    /* BG_COLOR de vuelta al verde oscuro. El MENU lo pone en NEGRO para que las
+     * letras se lean sobre negro (el glifo es transparente alrededor del trazo
+     * y deja ver este color), asi que hay que devolverlo al arrancar la
+     * partida. Con el valor de siempre: solo lo usa el fondo de las celdas
+     * transparentes. */
+    vid_set_bgcolor(VC_RGB444(0x0, 0x6, 0x0));
+
     /* Estado de juego. */
     lives = MAX_LIVES;
     fuel  = FUEL_MAX;
@@ -3300,35 +3300,179 @@ static void reset_game(void) {
 }
 
 /* ===========================================================================
- * GAME OVER
+ * GAME OVER: MENU JUGAR / SALIR
  * ===========================================================================
- * Ya NO hay panel con texto. Se quito para liberar ~500 bytes de codigo y de
- * RODATA que hacian falta para guardar island_r[] (32 bytes), el arreglo del
- * "choque con algo invisible" (ver el comentario de island_l/island_r).
+ * Al perder la ultima vida aparece un MENU de dos opciones, navegable con
+ * ARRIBA/ABAJO del JOYSTICK y confirmado con FIRE. SALIR devuelve el control al
+ * monitor (quit_flag), JUGAR reinicia la partida.
  *
- * Ahora el mundo se queda congelado con los sprites apagados y se espera a
- * FIRE/R para reiniciar o Q para salir. Es la misma mecanica que la pantalla
- * anterior, sin el cartel: la consola del monitor sigue mostrando el estado.
+ * POR QUE UN MENU Y NO FIRE/Q: el juego ya no lee el UART (se quitaron los
+ * bucles de read_input y fire_pressed, ~310 bytes que pagaron este cartel).
+ * Todo va por el joystick, asi que la salida tambien.
+ *
+ * El mundo queda congelado detras: game_over corta el scroll y los sprites
+ * estan apagados, asi que el texto se lee sin tener que limpiar la VRAM (que
+ * obligaria a recargar todos los patrones).
  * =========================================================================== */
+
+#define MENU_JUGAR 0
+#define MENU_SALIR 1
+#define MENU_COL   16                  /* columna del texto              */
+#define MENU_FILA  13                  /* fila del tilemap (zona visible) */
+#define MENU_FILA2 (MENU_FILA + 2)
+
+/* Pinta UNA celda del menu: tile + atributo. Toda celda del cartel pasa por
+ * aqui, asi que el atributo (PAL_MENU) no se puede olvidar en ningun sitio, que
+ * es lo que hacia que unas celdas salieran con los colores del rio. */
+static void menu_celda(uint16_t cell, uint8_t tile) {
+    fv_cell(cell, tile);
+    fv_attr_cell(cell, PAL_MENU);
+}
+
+/* Escribe "JUGAR" (sel = MENU_JUGAR) o "SALIR" en la fila pedida.
+ *
+ * LOS CARACTERES VAN UNO A UNO, SIN PUNTEROS NI BUCLE. Con una cadena y un
+ * `while (*s)` la SEGUNDA llamada solo escribia el primer caracter (se veia la
+ * "S" y nada mas) y encima borraba el texto de la otra fila: se comprobo en el
+ * emulador. Reventaba la pila de cc65 al mezclar el uint16 de la celda con el
+ * puntero de la cadena en el mismo marco. Cinco celdas fijas no necesitan bucle
+ * ni literales de RODATA: cada letra es un inmediato. */
+/* Las dos etiquetas en UNA tabla de 10 bytes, sin terminadores NUL: los
+ * primeros 5 son "JUGAR" y los otros 5 "SALIR". Una tabla con punteros o dos
+ * literales costaban mas (cc65 mete el \0 y alinea, +16 bytes de RODATA) o
+ * temporales de pila en BSS (+9). */
+static const uint8_t menu_letras[10] = {
+    'J', 'U', 'G', 'A', 'R',
+    'S', 'A', 'L', 'I', 'R'
+};
+
+/* Pinta UNA fila del menu: fondo negro en las 8 celdas y encima la etiqueta.
+ *
+ * ANTES ERAN DOS FUNCIONES (menu_fondo + menu_opcion) que recorrian las MISMAS
+ * celdas dos veces: 16 escrituras de tile y 16 de atributo por fila. Ahora es un
+ * solo bucle que decide el tile de cada celda (negro, marcador o letra) y
+ * escribe el atributo una vez. Cada escritura a VRAM cuesta ~15 bytes de codigo
+ * en cc65, asi que ahorrar el segundo recorrido se nota.
+ *
+ * Reparto de la fila (MENU_COL - 2 es la primera celda):
+ *   c-2  -> marcador '>' o negro
+ *   c-1  -> negro
+ *   c..c+4 -> las 5 letras
+ *   c+5  -> negro
+ */
+static void menu_fila(uint8_t fila, uint8_t salir, uint8_t marcada) {
+    uint16_t c = VC_CELL(MENU_COL - 2, fila);
+    uint8_t n;
+    uint8_t letra = 0xFF;      /* 0xFF = esta celda no lleva letra */
+
+    for (n = 0; n < 8; n++) {
+        uint8_t t = TILE_PANEL;
+
+        if (n == 0 && marcada)      t = (uint8_t)'>';
+        else if (n >= 2 && n < 7)   t = menu_letras[(uint8_t)((salir ? 5 : 0) + n - 2)];
+
+        fv_cell(c, t);
+        fv_attr_cell(c, PAL_MENU);
+        c++;
+    }
+}
+
+/* Estado del MENU, a nivel de MODULO y no `static` dentro de la funcion.
+ *
+ * OJO: como `static` locales, cc65 las mete en simbolos ANONIMOS (M0001, M0002,
+ * M0003...) que reutiliza entre funciones. Aqui `sel` compartia M0001 con otro
+ * temporal y el atributo de la opcion seleccionada nunca salia bien: las dos
+ * filas quedaban en PAL_MENU aunque `sel` fuese 0 (medido en el emulador).
+ * Con nombre propio no hay forma de que se solapen. */
+static uint8_t menu_sel;       /* 0 = JUGAR, 1 = SALIR             */
+static uint8_t menu_soltar;    /* antirrebote de arriba/abajo      */
+static uint8_t menu_pintado;   /* 1 = el cartel ya esta en la VRAM */
+
+/* Frames que dura cada mitad del titileo. A 50 Hz, 12 frames = 4,2 titileos
+ * por segundo: se ve parpadear sin resultar molesto. */
+#define TITILA_FRAMES 12
+
 static void game_over_screen(void) {
     uint8_t j = joy_read();
-    char c;
 
-    if (j & JOY_A_FIRE) {
-        reset_game();
-        return;
+
+    /* Navegacion. Se exige SOLTAR entre paso y paso: sin esto la seleccion se
+     * moveria 50 veces por segundo (un frame = una pulsacion) y seria
+     * imposible elegir. */
+    if (j & (JOY_A_UP | JOY_A_DOWN)) {
+        if (!menu_soltar) {
+            menu_soltar = 1;
+            menu_sel = (uint8_t)((j & JOY_A_UP) ? MENU_JUGAR : MENU_SALIR);
+            menu_pintado = 0;
+            menu_pintado = 0;
+        }
+    } else {
+        menu_soltar = 0;
     }
 
-    while (rom_uart_rx_ready()) {
-        c = rom_uart_getc();
-        if (c == 'r' || c == 'R' || c == ' ') {
-            reset_game();
-            return;
-        }
-        if (c == 'q' || c == 'Q') {
+    /* EL CARTEL SE DIBUJA EN EL VBLANK Y SOLO CUANDO HACE FALTA.
+     *
+     * Antes se redibujaba en CADA frame y eso dejaba el cartel a medias: unas
+     * veces faltaba una letra, otras aparecia solo "ALIR" (medido en el
+     * emulador leyendo /vram.json varias veces seguidas). El motivo es el del
+     * manual del core: escribir el tilemap FUERA del barrido parte las celdas,
+     * porque el raster las lee mientras se escriben.
+     *
+     * Ahora se pinta una vez por frame COMO MUCHO, y el bucle principal ya nos
+     * llama dentro de la ventana segura (justo despues de perf_begin, antes de
+     * vid_wait_vblank_end). Se repinta solo si se ensucio: la primera vez y
+     * cada vez que cambia la seleccion.
+     *
+     * OJO CON EL SCROLL: en este juego la fila del tilemap que se ve en una
+     * coordenada y es (scroll_val + y) >> 3, asi que con el scroll donde lo
+     * dejo la partida la fila 13 del tilemap cae en cualquier sitio de la
+     * pantalla, o FUERA de la vista. Se pone a 0 para que la fila N del
+     * tilemap sea la fila N de pantalla. Al volver a JUGAR, reset_game()
+     * vuelve a fijar el scroll de la partida. */
+    scroll_val = 0;
+    vid_set_scroll_y(0);
+
+    if (!menu_pintado) {
+        menu_pintado = 1;
+
+        /* BG_COLOR NEGRO mientras se ve el cartel. El glifo de la fuente NO
+         * tiene fondo propio: el trazo va con el indice de $D818 (3) y el RESTO
+         * de la celda emite indice 0, TRANSPARENTE. Lo que se ve detras de las
+         * letras es BG_COLOR (entrada 15), y por eso salian sobre verde oscuro
+         * por mucho que se pusiera TILE_PANEL en la celda: la celda ES el glifo.
+         *
+         * Se puede tocar sin estropear el rio porque la orilla ya no tiene
+         * pixeles transparentes (ver tile_edge_l0/r0): el agua del cauce es
+         * opaca. Al volver a JUGAR se restaura (ver reset_game). */
+        vid_set_bgcolor(VC_RGB444(0x0, 0x0, 0x0));
+        /* Las dos filas, cada una en un solo recorrido. La seleccion va como
+         * tercer argumento: pone el '>' en la primera celda. */
+        menu_fila(MENU_FILA,  0, (uint8_t)(menu_sel == MENU_JUGAR));
+        menu_fila(MENU_FILA2, 1, (uint8_t)(menu_sel == MENU_SALIR));
+
+    }
+
+
+
+    if (j & JOY_A_FIRE) {
+        menu_pintado = 0;
+        if (menu_sel == MENU_SALIR) {
+            /* SALIR = equivalente a escribir QB en el monitor: reset RELEYENDO
+             * BOOT.INI. Mirar monitor.c:
+             *     QB -> SYSFLAGS = 0; soft_reset();
+             * O sea, el bit 0 del flag hay que DEJARLO A CERO. Con 1 el monitor
+             * iria al prompt (eso es lo que hace Q), que no es lo que queremos:
+             * queremos volver al launcher.
+             *
+             * Se limpia explicitamente porque el flag es pegajoso (sobrevive al
+             * reset y solo se pierde al recargar el bitstream): si una ejecucion
+             * anterior lo dejo a 1, sin esto el reset caeria en el prompt. */
+            SYSFLAGS = 0;
             quit_flag = 1;
             return;
         }
+        menu_sel = MENU_JUGAR;
+        reset_game();
     }
 }
 
@@ -3341,6 +3485,25 @@ int main(void) {
     quit_flag = 0;
     sprites_off = 0;
     oam_cache_invalida = 1;   /* el OAM se limpio: reescribir patrones */
+
+    /* SE ARRANCA EN EL MENU. Sin UART no hay otra forma de salir del juego, asi
+     * que el menu tiene que estar tambien al principio: si no, la unica manera
+     * de volver al monitor seria terminar las tres vidas.
+     *
+     * En vez de duplicar el cartel se usa game_over = 1, que es exactamente el
+     * estado del que cuelga el menu (ver game_over_screen). Asi JUGAR llama a
+     * reset_game() y arranca la partida igual que tras una muerte.
+     *
+     * OJO CON esperando_fire: setup_video() lo deja a 1 (el avion esperando
+     * FIRE), y ese estado sale del bucle con `continue` ANTES de llegar al
+     * menu. Con las dos cosas a la vez no se veia el cartel nunca. El menu
+     * manda: se apaga la espera y el menu decide.
+     */
+    game_over = 1;
+    esperando_fire = 0;
+    menu_pintado = 0;
+    menu_sel = MENU_JUGAR;
+    menu_soltar = 0;
 
     while (!quit_flag) {
         vid_wait_vblank();
@@ -3491,6 +3654,11 @@ int main(void) {
     fv_clear_oam();
     vid_set_scroll_y(0);
     vid_wait_vblank_end();
+
+    /* Vuelta al monitor con autoboot: se salta al vector de reset y el monitor
+     * relee BOOT.INI, igual que el comando QB. SYSFLAGS ya esta a 0 (lo deja
+     * asi la opcion SALIR). */
+    __asm__("jmp ($FFFC)");
 
     return 0;
 }
